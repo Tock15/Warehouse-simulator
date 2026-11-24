@@ -70,6 +70,14 @@ admissible_off_path(Name) :-
              ;   true                      % unsolvable: any h, or none, is fine
              ) )).
 
+% run(+Name, +Algo, -Cost, -Nodes): solve the level, check the plan replays to a win at Cost.
+run(Name, Algo, Cost, Nodes) :-
+    level(Name, L), load(L),
+    initial_state(S0),
+    search(Algo, S0, found(As, Cost, Nodes)),
+    foldl(apply_action, As, [S0-0], [End-Cost|_]),
+    goal_state(End).
+
 :- begin_tests(dist).
 
 test(open, D == 3) :- board([], [], 1-1, L), load(L), dist(0, 1-1, 4-1, D).
@@ -135,3 +143,16 @@ test(belt_off_path) :- admissible_off_path(belt).
 test(fragile_off_path) :- admissible_off_path(fragile).
 
 :- end_tests(admissible).
+
+:- begin_tests(algorithms).
+
+% Plan section 8: UCS and A* return the same cost, greedy one that is >= it.
+test(astar_optimal_greedy_not_better) :-
+    forall(level(Name, _),
+           ( run(Name, ucs, U, _), run(Name, astar, A, _), run(Name, greedy, G, _),
+             assertion(A =:= U), assertion(G >= U) )).
+test(dead_start_pruned, R == no_solution(0)) :-
+    load(level([2-1, 1-2], [goal(g1, 6-6)], [box(a, 1-1, 1, any)], 5-5, [], [], [], [])),
+    initial_state(S), search(astar, S, R).
+
+:- end_tests(algorithms).
