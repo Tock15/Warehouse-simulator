@@ -2,6 +2,7 @@
 
 Run: uv run warehouse-viewer
 Keys: left/right = level, A/G/U = solve with A*/greedy/UCS and play, R = reset, Esc = quit."""
+import math
 from pathlib import Path
 
 import pygame
@@ -12,13 +13,13 @@ ASSETS = Path(__file__).resolve().parents[2] / "assets"
 
 CELL, PANEL = 56, 260
 MOVES = {"u": (0, -1), "d": (0, 1), "l": (-1, 0), "r": (1, 0)}
-STEPS_PER_SEC = 6
+STEP_TIME, LIFT_TIME = 0.2, 0.22  # seconds per walked (or belt) cell, and to lift or place a crate
+SINK, HOP, ARC = 6, 3, 10  # px: robot sinks under a load, bobs while walking; crate arcs when lifted/placed
 DOOR_FRAMES, DOOR_FPS = 5, 15  # door sheet: frame 0 shut ... frame 4 open
+BELT_PERIOD, BELT_FPS = 8, 20  # belt art repeats every 8 source px; scroll one source px per frame
 
 FLOOR, FLOOR_ALT, WALL = (0x8F, 0xD2, 0xFF), (0x7F, 0xC4, 0xF4), (70, 70, 75)  # floor is a checkerboard
 GOAL_EMPTY, GOAL_DONE, GOAL_WRONG = (205, 115, 0), (25, 125, 60), (200, 40, 40)
-FRAGILE, BELT = (245, 190, 120), (120, 160, 230)
-PLATE = (240, 210, 60)
 TEXT, BOX_TEXT, BOX_EDGE = (20, 20, 20), (255, 245, 215), (60, 35, 15)
 
 
@@ -60,14 +61,38 @@ LEVELS = [
 ]
 
 
+def scaled(img, wh):
+    """Scale to wh. Small pixel art is blown up crisply first, so the final smoothscale only shrinks (no blur)."""
+    if max(img.get_size()) < max(wh):
+        img = pygame.transform.scale_by(img, -(-2 * max(wh) // max(img.get_size())))
+    return pygame.transform.smoothscale(img, wh)
+
+
 def sprite(name, size, square=False):
     """Image from assets/, scaled to fit a size x size square (aspect kept), or stretched to fill it."""
     img = pygame.image.load(ASSETS / name).convert_alpha()
-    if max(img.get_size()) < size:  # small pixel art: blow up crisply first, so the final smoothscale only shrinks
-        img = pygame.transform.scale_by(img, -(-2 * size // max(img.get_size())))
     k = size / max(img.get_size())
-    wh = (size, size) if square else (round(img.get_width() * k), round(img.get_height() * k))
-    return pygame.transform.smoothscale(img, wh)
+    return scaled(img, (size, size) if square else (round(img.get_width() * k), round(img.get_height() * k)))
+
+
+def sheet(name, n, size):
+    """The n square frames of a horizontal sprite sheet, each scaled to size x size."""
+    img = pygame.image.load(ASSETS / name).convert_alpha()
+    w = img.get_width() // n
+    return [scaled(img.subsurface((i * w, 0, w, img.get_height())), (size, size)) for i in range(n)]
+
+
+def belt_frames(size):
+    """Scrolling belt animation for each direction: {(dx, dy): frames}. The art runs left to right."""
+    img = pygame.image.load(ASSETS / "conveyor_belt_32.png").convert_alpha()
+    frames = []
+    for k in range(BELT_PERIOD):
+        f = pygame.Surface(img.get_size(), pygame.SRCALPHA)
+        f.blit(img, (k, 0))
+        f.blit(img, (k - img.get_width(), 0))
+        frames.append(scaled(f, (size, size)))
+    turn = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): -90}
+    return {d: [pygame.transform.rotate(f, a) for f in frames] for d, a in turn.items()}
 
 
 def door_frames(size):
@@ -105,6 +130,49 @@ def goal_mark(screen, r, color):
     pygame.draw.line(screen, color, (cx - 9, cy + 6), (cx + 9, cy + 6), 3)
 
 
+def ease(t):
+    """Smoothstep: slow start and end."""
+    return t * t * (3 - 2 * t)
+
+
+def lerp(a, b, t):
+    return a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+
+
+def cell_px(c):
+    """Pixel centre of a cell."""
+    return c[0] * CELL + CELL / 2, c[1] * CELL + CELL / 2
+
+
+def ride_path(lv, robot, exit_):
+    """Cells a belt ride passes through: where the robot stands, the belt entry next to it, the exit."""
+    belt = next(b for b in lv["belts"] if tuple(b["exit"]) == tuple(exit_)
+                and abs(b["entry"][0] - robot[0]) + abs(b["entry"][1] - robot[1]) == 1)
+    return [robot, tuple(belt["entry"]), tuple(exit_)]
+
+
+def along(cells, t):
+    """Pixel point a fraction t of the way along a path of cells, at constant speed."""
+    pts = [cell_px(c) for c in cells]
+    legs = [abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in zip(pts, pts[1:])]
+    d = t * sum(legs)
+    for a, b, n in zip(pts, pts[1:], legs):
+        if d <= n:
+            return lerp(a, b, d / n if n else 1)
+        d -= n
+    return pts[-1]
+
+
+def step_time(lv, st, step):
+    """How long a plan step takes to animate: a belt ride takes one STEP_TIME per cell it covers."""
+    if isinstance(step, str):
+        return STEP_TIME
+    if step[0] == "ride":
+        _, (ex, ey), (xx, xy) = ride_path(lv, st["robot"], step[1])
+        return STEP_TIME * (abs(xx - ex) + abs(xy - ey) + 1)
+    return LIFT_TIME
+
+
 def start(lv):
     """Mutable play state for a level: robot cell, held box id, box id -> cell."""
     return {"robot": tuple(lv["robot"]), "held": None, "boxes": {b["id"]: tuple(b["pos"]) for b in lv["boxes"]}}
@@ -126,17 +194,17 @@ def apply(st, step):
 
 
 def belt_cells(lv):
-    """(cell, arrow) for every belt cell: entry up to the cell before the exit."""
+    """(cell, direction) for every belt cell: entry up to the cell before the exit."""
     out = []
     for b in lv["belts"]:
         (ex, ey), (xx, xy) = b["entry"], b["exit"]
         dx, dy = (xx > ex) - (xx < ex), (xy > ey) - (xy < ey)
-        arrow = {(1, 0): ">", (-1, 0): "<", (0, 1): "v", (0, -1): "^"}[(dx, dy)]
-        out += [((ex + k * dx, ey + k * dy), arrow) for k in range(abs(xx - ex) + abs(xy - ey))]
+        out += [((ex + k * dx, ey + k * dy), (dx, dy)) for k in range(abs(xx - ex) + abs(xy - ey))]
     return out
 
 
-def draw(screen, font, big, sprites, name, lv, st, status, door_frame):
+def draw(screen, font, big, sprites, name, lv, st, status, door_frame, anim=None):
+    """Draw the board in state st; anim = (step, t) shows step t of the way done (st is the state before it)."""
     screen.fill(FLOOR)
     rect = lambda c, pad=0: pygame.Rect(c[0] * CELL + pad, c[1] * CELL + pad, CELL - 2 * pad, CELL - 2 * pad)
 
@@ -144,22 +212,32 @@ def draw(screen, font, big, sprites, name, lv, st, status, door_frame):
         img = f.render(text, True, color)
         screen.blit(img, img.get_rect(center=(c[0] * CELL + CELL // 2, c[1] * CELL + CELL // 2 + dy)))
 
-    walls = {tuple(w) for w in lv["walls"]} | {(x, y) for x in range(10) for y in range(10) if x in (0, 9) or y in (0, 9)}
+    border = {(x, y) for x in range(10) for y in range(10) if x in (0, 9) or y in (0, 9)}
+    walls = {tuple(w) for w in lv["walls"]} | border
+    # shelves: free-standing wall groups with floor all around; walls joined to the border stay plain
+    plain, todo = set(border), list(border)
+    while todo:
+        x, y = todo.pop()
+        for dx, dy in MOVES.values():
+            n = (x + dx, y + dy)
+            if n in walls and n not in plain:
+                plain.add(n)
+                todo.append(n)
+    shelves = walls - plain
     for x in range(10):
         for y in range(10):
-            pygame.draw.rect(screen, WALL if (x, y) in walls else (FLOOR, FLOOR_ALT)[(x + y) % 2], rect((x, y)))
+            if (x, y) in shelves:  # variant fixed by position, so the warehouse looks mixed but never flickers
+                screen.blit(sprites["shelf"][(x * 3 + y * 5) % len(sprites["shelf"])], rect((x, y)))
+            else:
+                pygame.draw.rect(screen, WALL if (x, y) in walls else (FLOOR, FLOOR_ALT)[(x + y) % 2], rect((x, y)))
     for f in lv["fragile"]:
-        pygame.draw.rect(screen, FRAGILE, rect(f["pos"], 2))
-        label(f"max {f['max_weight']}", f["pos"], dy=18)
-    for c, arrow in belt_cells(lv):
-        pygame.draw.rect(screen, BELT, rect(c, 2))
-        label(arrow * 3, c, f=big)
-    for b in lv["belts"]:
-        pygame.draw.rect(screen, BELT, rect(b["exit"], 4), 2)
-        label("exit", b["exit"], dy=18)
-    for p in lv["plates"]:
-        pygame.draw.circle(screen, PLATE, rect(p).center, CELL // 3)
-        label("plate", p, dy=18)
+        screen.blit(sprites["fragile"], rect(f["pos"]))
+        label(f"max {f['max_weight']}", f["pos"], dy=19)
+    belt_frame = pygame.time.get_ticks() * BELT_FPS // 1000 % BELT_PERIOD
+    for c, d in belt_cells(lv):
+        screen.blit(sprites["belt"][d][belt_frame], rect(c))
+    for p in lv["plates"]:  # pressed (frame 1) while a crate sits on it
+        screen.blit(sprites["plate"][tuple(p) in st["boxes"].values()], rect(p))
     for d in lv["doors"]:
         screen.blit(sprites["door"][door_frame], rect(d))
     weight = {b["id"]: b["weight"] for b in lv["boxes"]}
@@ -170,18 +248,40 @@ def draw(screen, font, big, sprites, name, lv, st, status, door_frame):
         color = GOAL_EMPTY if b is None else GOAL_DONE if target[b] in (None, g["id"]) else GOAL_WRONG
         goal_mark(screen, rect(g["pos"], 1), color)
         label(g["id"], g["pos"], color, dy=16)
+    step, t = anim or (None, 0.0)
+    kind = None if step is None else "walk" if isinstance(step, str) else step[0]
     for b, c in st["boxes"].items():
+        if kind == "pick" and b == step[1]:
+            continue  # in the air, drawn with the robot
         screen.blit(sprites["crate"], sprites["crate"].get_rect(center=rect(c).center))
         cx, cy = rect(c).center
         outlined(screen, font, f"{b} w{weight[b]}", (cx, cy - 6))
         outlined(screen, font, f"->{target[b]}" if target[b] else "any", (cx, cy + 6))
-    cx, cy = rect(st["robot"]).center
-    bot = sprites["robot"].get_rect(center=(cx, cy + (6 if st["held"] else 0)))  # sink a little under a load
+    # robot: slides between cells (bobbing when walking, steady on a belt) and sinks under a load
+    pos, sink, crate = cell_px(st["robot"]), SINK if st["held"] else 0, st["held"]
+    if kind == "walk":
+        dx, dy = MOVES[step]
+        pos = lerp(pos, cell_px((st["robot"][0] + dx, st["robot"][1] + dy)), ease(t))
+        sink -= HOP * math.sin(math.pi * t)
+    elif kind == "ride":
+        pos = along(ride_path(lv, st["robot"], step[1]), t)
+    elif kind == "pick":
+        sink, crate = SINK * ease(t), step[1]
+    elif kind == "drop":
+        sink = SINK * (1 - ease(t))
+    bot = sprites["robot"].get_rect(center=(round(pos[0]), round(pos[1] + sink)))
     screen.blit(sprites["robot"], bot)
-    if st["held"]:  # held crate drawn over the robot's head, as if lifted
-        top = sprites["crate"].get_rect(midbottom=(bot.centerx, bot.top + 12))
+    if crate:  # crate on the robot's head, or travelling between the floor and its head
+        head = (bot.centerx, bot.top + 12 - sprites["crate"].get_height() / 2)
+        if kind == "pick":
+            head = lerp(cell_px(st["boxes"][crate]), head, ease(t))
+        elif kind == "drop":
+            head = lerp(head, cell_px(step[2]), ease(t))
+        if kind in ("pick", "drop"):
+            head = (head[0], head[1] - ARC * math.sin(math.pi * t))
+        top = sprites["crate"].get_rect(center=(round(head[0]), round(head[1])))
         screen.blit(sprites["crate"], top)
-        outlined(screen, font, st["held"], top.center)
+        outlined(screen, font, crate, top.center)
 
     x0 = 10 * CELL + 12
     lines = [name, "", *status, "", "left/right: level", "A / G / U: solve + play", "R: reset", "Esc: quit"]
@@ -195,7 +295,9 @@ def main():
     pygame.display.set_caption("Warehouse robot - dev viewer")
     font, big = pygame.font.SysFont(None, 18), pygame.font.SysFont(None, 26)
     sprites = {"robot": sprite("AI-sprite.png", CELL - 8), "crate": sprite("crate_crosstape_32.png", CELL - 4, square=True),
-               "door": door_frames(CELL)}
+               "door": door_frames(CELL), "belt": belt_frames(CELL), "plate": sheet("box_plate_2f_32.png", 2, CELL),
+               "fragile": sprite("fragile_floor_32.png", CELL, square=True),
+               "shelf": sheet("shelf_4variants_32.png", 4, CELL)}
     clock = pygame.time.Clock()
     idx, st, status, plan, pending, timer = 0, start(LEVELS[0][1]), ["press A to solve"], [], None, 0.0
     door_t = None  # animated door frame (float); None snaps to the current state on the next frame
@@ -235,18 +337,20 @@ def main():
                     status = [f"{algo}: cost {res['cost']}", f"nodes expanded {res['nodes']}",
                               f"{len(plan)} steps"]
 
-        if plan:
+        lv = LEVELS[idx][1]
+        if plan:  # timer = seconds into the current step; a step is applied once its animation ends
             timer += dt
-            while plan and timer >= 1 / STEPS_PER_SEC:
-                timer -= 1 / STEPS_PER_SEC
+            while plan and timer >= step_time(lv, st, plan[0]):
+                timer -= step_time(lv, st, plan[0])
                 apply(st, plan.pop(0))
             if not plan:
                 status = status + ["done"]
+        anim = (plan[0], timer / step_time(lv, st, plan[0])) if plan else None
 
-        goal = DOOR_FRAMES - 1 if door_open(LEVELS[idx][1], st) else 0
+        goal = DOOR_FRAMES - 1 if door_open(lv, st) else 0
         door_t = goal if door_t is None else (min(goal, door_t + DOOR_FPS * dt) if goal > door_t
                                               else max(goal, door_t - DOOR_FPS * dt))
-        draw(screen, font, big, sprites, LEVELS[idx][0], LEVELS[idx][1], st, status, round(door_t))
+        draw(screen, font, big, sprites, LEVELS[idx][0], lv, st, status, round(door_t), anim)
         pygame.display.flip()
 
     bridge.shutdown()
