@@ -2,18 +2,24 @@
 
 Run: uv run warehouse-viewer
 Keys: left/right = level, A/G/U = solve with A*/greedy/UCS and play, R = reset, Esc = quit."""
+from pathlib import Path
+
 import pygame
 
 from warehouse_robot import bridge
 
+ASSETS = Path(__file__).resolve().parents[2] / "assets"
+
 CELL, PANEL = 56, 260
 MOVES = {"u": (0, -1), "d": (0, 1), "l": (-1, 0), "r": (1, 0)}
 STEPS_PER_SEC = 6
+DOOR_FRAMES, DOOR_FPS = 5, 15  # door sheet: frame 0 shut ... frame 4 open
 
-FLOOR, WALL, GRID = (235, 235, 230), (70, 70, 75), (205, 205, 200)
-GOAL, FRAGILE, BELT = (60, 170, 90), (245, 190, 120), (120, 160, 230)
-PLATE, DOOR, BOX = (240, 210, 60), (150, 95, 50), (200, 160, 100)
-ROBOT, TEXT = (40, 90, 200), (20, 20, 20)
+FLOOR, FLOOR_ALT, WALL = (0x8F, 0xD2, 0xFF), (0x7F, 0xC4, 0xF4), (70, 70, 75)  # floor is a checkerboard
+GOAL_EMPTY, GOAL_DONE, GOAL_WRONG = (205, 115, 0), (25, 125, 60), (200, 40, 40)
+FRAGILE, BELT = (245, 190, 120), (120, 160, 230)
+PLATE = (240, 210, 60)
+TEXT, BOX_TEXT, BOX_EDGE = (20, 20, 20), (255, 245, 215), (60, 35, 15)
 
 
 def room(mx, my):
@@ -54,6 +60,51 @@ LEVELS = [
 ]
 
 
+def sprite(name, size, square=False):
+    """Image from assets/, scaled to fit a size x size square (aspect kept), or stretched to fill it."""
+    img = pygame.image.load(ASSETS / name).convert_alpha()
+    if max(img.get_size()) < size:  # small pixel art: blow up crisply first, so the final smoothscale only shrinks
+        img = pygame.transform.scale_by(img, -(-2 * size // max(img.get_size())))
+    k = size / max(img.get_size())
+    wh = (size, size) if square else (round(img.get_width() * k), round(img.get_height() * k))
+    return pygame.transform.smoothscale(img, wh)
+
+
+def door_frames(size):
+    """Door animation frames from the sheet: 5 frames of 320 x 320, art inside a 10 px margin."""
+    sheet = pygame.image.load(ASSETS / "preview_x10.png").convert()
+    return [pygame.transform.smoothscale(sheet.subsurface((i * 320 + 10, 10, 300, 300)), (size, size))
+            for i in range(DOOR_FRAMES)]
+
+
+def door_open(lv, st):
+    """Doors are open while any box sits on any plate (the held box is on no plate)."""
+    return any(list(p) in lv["plates"] for p in st["boxes"].values())
+
+
+def outlined(screen, f, text, center):
+    """Crate label: cream text with a dark brown outline, readable on the crate art."""
+    edge, fill = f.render(text, True, BOX_EDGE), f.render(text, True, BOX_TEXT)
+    r = fill.get_rect(center=center)
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)):
+        screen.blit(edge, r.move(dx, dy))
+    screen.blit(fill, r)
+
+
+def goal_mark(screen, r, color):
+    """Crate drop zone: tinted footprint, corner brackets, and an arrow pointing down onto a base line."""
+    tint = pygame.Surface(r.size, pygame.SRCALPHA)
+    tint.fill((*color, 55))
+    screen.blit(tint, r)
+    k, (x0, y0), (x1, y1) = r.w // 3, r.topleft, (r.right - 1, r.bottom - 1)
+    for (x, y), (dx, dy) in (((x0, y0), (1, 1)), ((x1, y0), (-1, 1)), ((x0, y1), (1, -1)), ((x1, y1), (-1, -1))):
+        pygame.draw.lines(screen, color, False, [(x + dx * k, y), (x, y), (x, y + dy * k)], 3)
+    cx, cy = r.center
+    pygame.draw.polygon(screen, color, [(cx - 7, cy - 6), (cx + 7, cy - 6), (cx, cy + 3)])
+    pygame.draw.rect(screen, color, (cx - 3, cy - 14, 6, 8))
+    pygame.draw.line(screen, color, (cx - 9, cy + 6), (cx + 9, cy + 6), 3)
+
+
 def start(lv):
     """Mutable play state for a level: robot cell, held box id, box id -> cell."""
     return {"robot": tuple(lv["robot"]), "held": None, "boxes": {b["id"]: tuple(b["pos"]) for b in lv["boxes"]}}
@@ -85,7 +136,7 @@ def belt_cells(lv):
     return out
 
 
-def draw(screen, font, big, name, lv, st, status):
+def draw(screen, font, big, sprites, name, lv, st, status, door_frame):
     screen.fill(FLOOR)
     rect = lambda c, pad=0: pygame.Rect(c[0] * CELL + pad, c[1] * CELL + pad, CELL - 2 * pad, CELL - 2 * pad)
 
@@ -94,11 +145,9 @@ def draw(screen, font, big, name, lv, st, status):
         screen.blit(img, img.get_rect(center=(c[0] * CELL + CELL // 2, c[1] * CELL + CELL // 2 + dy)))
 
     walls = {tuple(w) for w in lv["walls"]} | {(x, y) for x in range(10) for y in range(10) if x in (0, 9) or y in (0, 9)}
-    door_open = any(list(p) in lv["plates"] for p in st["boxes"].values())
     for x in range(10):
         for y in range(10):
-            pygame.draw.rect(screen, WALL if (x, y) in walls else FLOOR, rect((x, y)))
-            pygame.draw.rect(screen, GRID, rect((x, y)), 1)
+            pygame.draw.rect(screen, WALL if (x, y) in walls else (FLOOR, FLOOR_ALT)[(x + y) % 2], rect((x, y)))
     for f in lv["fragile"]:
         pygame.draw.rect(screen, FRAGILE, rect(f["pos"], 2))
         label(f"max {f['max_weight']}", f["pos"], dy=18)
@@ -112,22 +161,27 @@ def draw(screen, font, big, name, lv, st, status):
         pygame.draw.circle(screen, PLATE, rect(p).center, CELL // 3)
         label("plate", p, dy=18)
     for d in lv["doors"]:
-        pygame.draw.rect(screen, DOOR, rect(d, 3), 3 if door_open else 0)
-        label("door", d, color=TEXT if door_open else FLOOR, dy=-7)
-        label("open" if door_open else "shut", d, color=TEXT if door_open else FLOOR, dy=7)
-    for g in lv["goals"]:
-        pygame.draw.rect(screen, GOAL, rect(g["pos"], 5), 3)
-        label(g["id"], g["pos"], GOAL, dy=-18)
+        screen.blit(sprites["door"][door_frame], rect(d))
     weight = {b["id"]: b["weight"] for b in lv["boxes"]}
     target = {b["id"]: b["goal"] for b in lv["boxes"]}
+    on = {c: b for b, c in st["boxes"].items()}
+    for g in lv["goals"]:
+        b = on.get(tuple(g["pos"]))
+        color = GOAL_EMPTY if b is None else GOAL_DONE if target[b] in (None, g["id"]) else GOAL_WRONG
+        goal_mark(screen, rect(g["pos"], 1), color)
+        label(g["id"], g["pos"], color, dy=16)
     for b, c in st["boxes"].items():
-        pygame.draw.rect(screen, BOX, rect(c, 10))
-        label(f"{b} w{weight[b]}", c)
-        label(f"->{target[b]}" if target[b] else "any", c, dy=12)
-    pygame.draw.circle(screen, ROBOT, rect(st["robot"]).center, CELL // 3)
-    label("R", st["robot"], FLOOR, f=big)
-    if st["held"]:
-        label(f"holds {st['held']}", st["robot"], dy=20)
+        screen.blit(sprites["crate"], sprites["crate"].get_rect(center=rect(c).center))
+        cx, cy = rect(c).center
+        outlined(screen, font, f"{b} w{weight[b]}", (cx, cy - 6))
+        outlined(screen, font, f"->{target[b]}" if target[b] else "any", (cx, cy + 6))
+    cx, cy = rect(st["robot"]).center
+    bot = sprites["robot"].get_rect(center=(cx, cy + (6 if st["held"] else 0)))  # sink a little under a load
+    screen.blit(sprites["robot"], bot)
+    if st["held"]:  # held crate drawn over the robot's head, as if lifted
+        top = sprites["crate"].get_rect(midbottom=(bot.centerx, bot.top + 12))
+        screen.blit(sprites["crate"], top)
+        outlined(screen, font, st["held"], top.center)
 
     x0 = 10 * CELL + 12
     lines = [name, "", *status, "", "left/right: level", "A / G / U: solve + play", "R: reset", "Esc: quit"]
@@ -140,8 +194,11 @@ def main():
     screen = pygame.display.set_mode((10 * CELL + PANEL, 10 * CELL))
     pygame.display.set_caption("Warehouse robot - dev viewer")
     font, big = pygame.font.SysFont(None, 18), pygame.font.SysFont(None, 26)
+    sprites = {"robot": sprite("AI-sprite.png", CELL - 8), "crate": sprite("crate_crosstape_32.png", CELL - 4, square=True),
+               "door": door_frames(CELL)}
     clock = pygame.time.Clock()
     idx, st, status, plan, pending, timer = 0, start(LEVELS[0][1]), ["press A to solve"], [], None, 0.0
+    door_t = None  # animated door frame (float); None snaps to the current state on the next frame
 
     def reset(i):
         return i, start(LEVELS[i][1]), ["press A to solve"], [], None
@@ -154,11 +211,13 @@ def main():
                 running = False
             elif ev.type == pygame.KEYDOWN and ev.key in (pygame.K_LEFT, pygame.K_RIGHT):
                 idx, st, status, plan, pending = reset((idx + (1 if ev.key == pygame.K_RIGHT else -1)) % len(LEVELS))
+                door_t = None
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_r:
                 idx, st, status, plan, pending = reset(idx)
+                door_t = None
             elif ev.type == pygame.KEYDOWN and ev.key in (pygame.K_a, pygame.K_g, pygame.K_u) and pending is None:
                 algo = {pygame.K_a: "astar", pygame.K_g: "greedy", pygame.K_u: "ucs"}[ev.key]
-                st, plan = start(LEVELS[idx][1]), []
+                st, plan, door_t = start(LEVELS[idx][1]), [], None
                 pending, status = (algo, bridge.submit(bridge.solve, LEVELS[idx][1], algo)), [f"{algo}: solving..."]
 
         if pending and pending[1].done():
@@ -184,7 +243,10 @@ def main():
             if not plan:
                 status = status + ["done"]
 
-        draw(screen, font, big, LEVELS[idx][0], LEVELS[idx][1], st, status)
+        goal = DOOR_FRAMES - 1 if door_open(LEVELS[idx][1], st) else 0
+        door_t = goal if door_t is None else (min(goal, door_t + DOOR_FPS * dt) if goal > door_t
+                                              else max(goal, door_t - DOOR_FPS * dt))
+        draw(screen, font, big, sprites, LEVELS[idx][0], LEVELS[idx][1], st, status, round(door_t))
         pygame.display.flip()
 
     bridge.shutdown()
