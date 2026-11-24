@@ -144,11 +144,36 @@ def _load(level):
     list(_engine().query(f"level:load_level({_term(level)})"))
 
 
+_ALGOS = {"astar", "greedy", "ucs"}
+
+
+def _step(s):
+    """Prolog step -> UI step: "u"/"d"/"l"/"r", ("ride", [x, y]), ("pick", id), ("drop", id, [x, y])."""
+    if isinstance(s, str):
+        return s
+    if s[0] == "ride":
+        return ("ride", [s[1], s[2]])
+    if s[0] == "pick":
+        return ("pick", s[1])
+    return ("drop", s[1], [s[2], s[3]])
+
+
 def validate(level):
-    """{"ok": True} or {"ok": False, "reason": str}. Build order step 7."""
-    raise NotImplementedError
+    """{"ok": True} or {"ok": False, "reason": str}. Runs A*, so call it through submit().
+    Raises ValueError on malformed input (bad ids, coordinates, ...)."""
+    out = list(_engine().query(f"solve:bridge_validate({_term(level)}, Out)"))[0]["Out"]
+    return {"ok": True} if out == ["ok"] else {"ok": False, "reason": out[1]}
 
 
 def solve(level, algo="astar"):
-    """{"plan": [...], "cost": int, "nodes": int}, or None if unsolvable. Build order step 7."""
-    raise NotImplementedError
+    """{"plan": [...], "cost": int, "nodes": int}, or None if unsolvable. Call it through submit().
+    Raises ValueError on malformed input or a level validate() would reject for a cheap reason."""
+    if algo not in _ALGOS:
+        raise ValueError(f"algo must be one of {sorted(_ALGOS)}, got {algo!r}")
+    out = list(_engine().query(f"solve:bridge_solve({_term(level)}, {algo}, Out)"))[0]["Out"]
+    if out[0] == "error":
+        raise ValueError(out[1])
+    if out[0] == "no_solution":
+        return None
+    _, steps, cost, nodes = out
+    return {"plan": [_step(s) for s in steps], "cost": cost, "nodes": nodes}

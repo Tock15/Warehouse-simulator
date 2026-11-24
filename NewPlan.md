@@ -170,13 +170,17 @@ Checked by tests: at every state on a UCS-optimal plan of 9 small levels (fragil
 
 `validate(Level)` runs cheap checks first, then the full search.
 
-**Cheap checks** (each failure returns a human-readable reason):
-- Exactly one robot. 1–4 boxes. Weights in {1, 2, 3}.
-- Enough goals: every box has an accepted goal, and no goal is required by two boxes.
-- Every `goal` id a box names exists.
-- Starting positions are legal: no box on a wall, belt or door, or on a fragile tile too weak for it. The robot is not on a wall, box or belt cell.
-- Plates and doors come together (doors without plates are permanent walls, which is allowed but probably a mistake; reject for clarity).
-- A box-to-goal assignment exists where every pair has a finite `dist` (otherwise: "box a can't reach any goal").
+**Cheap checks**, in this order (`problem/1` in `solve.pl`; the first failure is the reason returned):
+- 1–4 boxes. Box ids are unique, and so are goal ids. (The bridge already checked ids, coordinates and weights.)
+- Every goal a box names exists, no two boxes need the same goal, and there are at least as many goals as boxes.
+- Each cell holds at most one of wall, belt, door, plate, goal. The border is always wall. No two goals share a cell, and no two belts cross.
+- A belt doesn't end on a wall, belt or door, and fragile tiles aren't on walls, belts or doors.
+- Starting positions are legal:
+  - no two boxes on one cell;
+  - no box on a wall, belt or door, or on a fragile tile too weak for it;
+  - the robot not on a wall, belt, door or box.
+- Doors need plates, and plates need doors.
+- Every box can reach some goal it accepts (finite `dist`), and some assignment gives all boxes different reachable goals (h of the start is defined).
 
 **Full check:** run A*. A plan found means valid. `no_solution` means "Level has no solution" (e.g. a doorstop or conveyor trap).
 The space is finite and there are no limits, so this always finishes.
@@ -194,17 +198,20 @@ The space is finite and there are no limits, so this always finishes.
                 ...],
   "robot":     [x, y],
   "fragile":   [{"pos": [x, y], "max_weight": 1}, ...],
-  "belts":     [{"entry": [x, y], "exit": [x, y]}, ...],   # straight line; cells between are belt
+  "belts":     [{"entry": [x, y], "exit": [x, y]}, ...],   # straight line; entry up to the cell before exit is belt
   "plates":    [[x, y], ...],
   "doors":     [[x, y], ...]
 }
 ```
+- The border cells (x or y = 0 or 9) are always walls, whether or not they're listed.
+- Belts: the exit is an ordinary cell where the ride ends. The robot may step onto the entry from any neighboring cell, and the ride's length is |exit − entry| + 1.
+- Both calls run searches, so the UI calls them through `submit()`.
 
 ### Calls
 | Call | Returns |
 |---|---|
 | `validate(level)` | `{"ok": True}` or `{"ok": False, "reason": "3 boxes but 2 goals"}` |
-| `solve(level, algo)` with `algo` ∈ `"astar" \| "greedy" \| "ucs"` | `{"plan": [...], "cost": 17, "nodes": 812}`, or `None` if unsolvable |
+| `solve(level, algo)` with `algo` ∈ `"astar" \| "greedy" \| "ucs"` | `{"plan": [...], "cost": 17, "nodes": 812}`, or `None` if unsolvable. Raises `ValueError` if a cheap check fails (call `validate` first) |
 
 Plan steps for the UI to animate:
 - `"u" | "d" | "l" | "r"`: one robot step
@@ -234,7 +241,7 @@ One idea per file:
 | `rules.pl` | `can_hold/2`, `door_open/1`, `step/4` (a single step or a belt ride), shortest path, `action/4` (fetch/deliver with cost), `goal_state/1` |
 | `heuristic.pl` | `dist/4` table built at load (`build_dist/0`), `h_match/2`, `h_tour/2`, `h/2` = max |
 | `search.pl` | The best-first loop, `priority/4` (with A* tie-breaking), the best-g table, node count |
-| `solve.pl` | Entry points: `validate/2`, `solve/4`, macro plan → step plan |
+| `solve.pl` | Entry points: `load/1`, `validate/2`, `solve/3`, macro plan → step plan, and `bridge_validate/2` / `bridge_solve/3`, which return flat lists for PySwip |
 
 ### Style rules (to keep it easy to trace)
 - **At most ~4 arguments per predicate.** Bundle values into terms like `node(State, G, Path)`. (The old `bf/8` and `expand/12` are what we're avoiding.)
