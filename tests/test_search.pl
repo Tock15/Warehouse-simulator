@@ -24,13 +24,14 @@ check_plan(found(As, Cost, _)) :-
 test(already_solved, R == found([], 0, 0)) :-
     solve_ucs(level([], [goal(g1, 3-3)], [box(a, 3-3, 1, any)], 1-1, [], [], [], []), R).
 
-% Walk 1 + PICK + carry 3 x (1 + 1) + DROP = 9.
-test(one_box, Cost == 9) :-
+% Weight 1: each cell the box moves costs 2 (PICK, carry or DROP). Ties at 11: walk 1 from
+% behind, box moves 5 cells (it first goes back onto the robot at 2-1); or walk 5 to 4-1, box 3.
+test(one_box, Cost == 11) :-
     solve_ucs(level([], [goal(g1, 6-1)], [box(a, 3-1, 1, any)], 1-1, [], [], [], []), R),
     R = found(_, Cost, _), check_plan(R).
 
-% Weight 3: cheaper to walk empty around to 4-1 (5) + PICK + carry 1 x 4 + DROP = 11.
-test(heavy_box, Cost == 11) :-
+% Weight 3: walk empty around to 4-1 (5), then the box moves 3 cells x 4 = 17.
+test(heavy_box, Cost == 17) :-
     solve_ucs(level([], [goal(g1, 6-1)], [box(a, 3-1, 3, any)], 1-1, [], [], [], []), R),
     R = found(_, Cost, _), check_plan(R).
 

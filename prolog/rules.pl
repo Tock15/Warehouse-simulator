@@ -2,7 +2,7 @@
 % State = state(Robot, Held, Boxes). Held = none | Id. Boxes = Id-Cell pairs sorted by Id,
 % held box excluded. Ctx = ctx(W, Boxes): what the robot carries (W = 0 empty) and where boxes are.
 :- module(rules, [delta/3, can_hold/2, door_open/1, step/4, move_cost/3, dijkstra/3, route/3,
-                  action/4, initial_state/1, goal_state/1]).
+                  action/4, initial_state/1, goal_state/1, accepts/2]).
 :- use_module(level).
 :- use_module(library(heaps)).
 :- use_module(library(assoc)).
@@ -38,6 +38,7 @@ step(From, Ctx, M, To) :- neighbor(From, To, M), stand(To, Ctx).
 step(From, Ctx, ride(Exit, L), Exit) :- neighbor(From, E, _), belt(E, Exit, L), stand(Exit, Ctx).
 
 % move_cost(+Move, +W, -Cost): (1 + W) per cell walked; a ride counts its whole length.
+% PICK and DROP also cost 1 + w: every way of moving a box one cell costs the same.
 move_cost(M, W, C) :- delta(M, _, _), C is 1 + W.
 move_cost(ride(_, L), W, C) :- C is (1 + W) * L.
 
@@ -76,8 +77,8 @@ route_via(P/M, T, Acc, Moves) :- route(T, P, [M|Acc], Moves).
 
 % action(+State, -Action, -Cost, -Next): one macro action. One Dijkstra per call; backtracking
 % (e.g. findall) enumerates every child from that one table.
-% fetch(Id, Stand): walk empty to Stand next to box Id, PICK. Lifting must not close a door
-% the robot stands on.
+% fetch(Id, Stand): walk empty to Stand next to box Id, PICK (cost 1 + w). Lifting must not
+% close a door the robot stands on.
 action(state(R, none, Boxes), fetch(Id, S), Cost, state(S, Id, Rest)) :-
     dijkstra(R, ctx(0, Boxes), T),
     select(Id-P, Boxes, Rest),
@@ -86,8 +87,8 @@ action(state(R, none, Boxes), fetch(Id, S), Cost, state(S, Id, Rest)) :-
     weight(Id, W),
     can_hold(S, W),
     ( door(S) -> door_open(Rest) ; true ),
-    Cost is D + 1.
-% deliver(Id, Stand, Target): carry Id to Stand, DROP onto neighboring Target.
+    Cost is D + 1 + W.
+% deliver(Id, Stand, Target): carry Id to Stand, DROP onto neighboring Target (cost 1 + w).
 action(state(R, Id, Boxes), deliver(Id, S, Tg), Cost, state(S, none, Boxes1)) :-
     Id \== none,
     weight(Id, W),
@@ -95,7 +96,7 @@ action(state(R, Id, Boxes), deliver(Id, S, Tg), Cost, state(S, none, Boxes1)) :-
     gen_assoc(S, T, D-_),
     neighbor(S, Tg, _),
     droppable(Tg, W, Boxes),
-    Cost is D + 1,
+    Cost is D + 1 + W,
     sort([Id-Tg|Boxes], Boxes1).
 
 % droppable(+Cell, +W, +Boxes): a box of weight W may be dropped on Cell.

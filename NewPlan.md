@@ -13,7 +13,7 @@ Revamp after the prof's feedback. The push rule made the original Sokoban too ha
 | Player pushes boxes | Robot picks up, carries, drops | Prof: no push rule, simpler search |
 | Fixed level files | User-built levels: editor → submit → validate → solve | Prof: custom levels plus a solvability check |
 | Identical boxes | Weights 1, 2, 3 | Different costs give A* something to work with |
-| h_sum, h_match (h_match dominates, so max was useless) | max(h_match, h_far), where neither dominates | Prof: combine two heuristics with max |
+| h_sum, h_match (h_match dominates, so max was useless) | max(h_match, h_tour), where neither dominates | Prof: combine two heuristics with max |
 | BFS, IDS, UCS, greedy, A*, pruning toggle | **UCS, greedy, A*** only | Prof: drop the options. UCS is the optimal reference |
 | "Pruning" | Just the legal-move rules, always on | Prof: it's only which transitions are allowed |
 | Node/time limits, stats, verify reports | **Removed** | Prof doesn't care about stats, and they complicated the code |
@@ -45,9 +45,10 @@ Revamp after the prof's feedback. The push rule made the original Sokoban too ha
 | Step (empty) | Target not a wall, box, closed door or belt cell (belts are entered only through their entry) | 1 |
 | Step (carrying box of weight w) | Same, plus the target tile can hold w | 1 + w |
 | Ride belt | Robot steps onto a belt's entry and comes out at its exit; the exit cell must be free (and hold w if carrying) | (1 + w) × length (w = 0 if empty) |
-| PICK box | Robot empty, box on a neighboring cell (4 directions), robot's own tile can hold w, and if the box is on a plate the robot isn't standing on a door | 1 |
-| DROP box | Neighboring cell is floor/goal/plate (not belt, door or wall), is empty, and can hold w | 1 |
+| PICK box | Robot empty, box on a neighboring cell (4 directions), robot's own tile can hold w, and the lift doesn't close a door the robot stands on (i.e. not the last box on a plate while on a door) | 1 + w |
+| DROP box | Neighboring cell is floor/goal/plate (not belt, door or wall), is empty, and can hold w | 1 + w |
 
+- **PICK and DROP cost 1 + w**, like a carried step. Each one moves the box one cell, so with cost 1 a heavy box could be moved hand-over-hand (pick from one side, drop on the other) without ever paying for its weight. At 1 + w, every way of moving a box one cell costs the same.
 - **Capacity: one box at a time.** There is no facing direction (it would multiply the state count by 4).
 - **Boxes are obstacles** to the robot. That's what makes narrow aisles require planning: clear the blocker first.
 - **A box can be dropped anywhere legal, not just on goals.** This is required for moving blockers out of the way and for parking a box on a plate.
@@ -81,8 +82,8 @@ If every single step were a node, the state count would grow by about 40× (one 
 
 | Search action | Meaning | Cost |
 |---|---|---|
-| `fetch(Id, Stand)` | Walk empty to cell `Stand` next to box `Id`, then PICK | shortest walk + 1 |
-| `deliver(Id, Stand, Target)` | Carry `Id` to `Stand`, then DROP onto neighboring `Target` | (1 + w) × shortest carry + 1 |
+| `fetch(Id, Stand)` | Walk empty to cell `Stand` next to box `Id`, then PICK | shortest walk + (1 + w) |
+| `deliver(Id, Stand, Target)` | Carry `Id` to `Stand`, then DROP onto neighboring `Target` | (1 + w) × (shortest carry + 1) |
 
 - "Shortest walk" and "shortest carry" come from a shortest-path search inside the move rules (belt edges, fragile tiles, current door status and current box obstacles all apply). Belt edges cost more than 1, so this is a small Dijkstra rather than a plain BFS. Nothing moves during a walk, so door status is constant for that search.
 - **One Dijkstra per node, not one per child.** A deliver can have ~100 children (every legal drop cell). Generate them all from **one** search: one Dijkstra from the robot (empty) gives the cost of every `fetch`; one Dijkstra from the robot (carrying) gives the cost of every `deliver`. Then `findall` over that distance table.
@@ -107,39 +108,61 @@ priority(astar,  G, H, F-NegG) :- F is G + H, NegG is -G.   % tie on f: prefer l
 - No limits. The state space is finite (≤4 boxes on a 10×10 grid), so search always ends with a plan or `no_solution`.
 - Count expanded nodes. That single number is the only statistic kept (A* vs greedy vs UCS).
 
-### Heuristics (DRAFT: to be redesigned in a dedicated session)
-> The prof grades the **quality of the heuristic** and the **technique of combining them with max**. Everything below is a first draft. Revisit before implementing step 4.
+### Heuristics
+> The prof grades the **quality of the heuristic** and the **technique of combining them with max**.
 
-**Distance tables**, precomputed once per level at load:
-`dist(W, From, To, D)` is the shortest path over cells that can hold weight W (W = 0 for empty), counting walls only.
-Belt cells are treated as plain floor (in both directions), and doors and boxes are **ignored**. A belt costs the same per cell as walking, so treating it as floor never overestimates. Dropping restrictions can only make paths shorter, so these distances stay lower bounds.
+**Cost split.** An empty step costs 1. Every way of moving a box one cell (PICK, a carried step, DROP) costs 1 + w. So every plan's cost splits exactly into three parts:
+- **robot moves**: 1 per robot step (empty or carrying; a belt ride counts its length),
+- **weight**: w for every cell a box of weight w moves (PICK, carried step or DROP),
+- **operations**: 1 per PICK or DROP.
 
-**Box cost lower bound** for box `b` (weight w) to goal `g`:
-- `b` already on `g`: 0
-- `b` held by the robot at R: (1 + w) × max(0, dist(w, R, g) − 1) + 1
-- otherwise, at P: 2 + (1 + w) × max(0, dist(w, P, g) − 2)
-  (2 for PICK + DROP. The box moves one cell on PICK, onto the robot, and one cell on DROP, so carrying covers at least d − 2.)
+Each heuristic bounds these parts from below, from a different point of view.
 
-**h_match**: the cheapest assignment of boxes to goals they accept, summing box cost lower bounds.
-With ≤4 boxes that's at most 24 permutations, so **use plain permutations, not the Hungarian algorithm.**
-Strong when many boxes remain. Ignores the robot's walking.
+**Distance tables**, precomputed once per level at load (`build_dist`):
+`dist(W, From, To, D)` is the shortest unit-cost path for a robot carrying weight W (W = 0 for empty). Walls block, and every cell entered must hold W. Belt cells are plain floor in both directions and hold any weight, and doors and boxes are **ignored**. Unreachable pairs have no entry, and `dist` fails.
 
-**h_far**: the worst single box.
-`max over unplaced boxes b of [ walk_lb(Robot, b) + cost_lb(b, nearest accepted goal) ]`
-where `walk_lb = max(0, dist(0, Robot, P) − 1)` (0 for the held box).
-Strong when one box is far from the robot. Weak when many boxes remain.
+**Shift of a box** b (weight w) to a goal g it accepts, i.e. how many cells it must still move:
+- on the floor at P = g: 0
+- on the floor at P ≠ g: dist(w, P, g)
+- held by the robot at R: max(1, dist(w, R, g)) (it must at least be dropped)
 
-**h = max(h_match, h_far).**
-Neither dominates. Example: box A is next to the robot and 1 step from a goal; box B is 30 steps from the robot and 1 step from a goal. h_far ≈ 31, while h_match ≈ 4. With many light boxes near the robot, h_match wins instead.
+**h_match: the boxes' view.**
+min over assignments of boxes to *distinct* accepted goals of Σ (1 + w) × shift(b, g_b), plus the robot's empty walk to the nearest box (if the robot is empty and work is left): max(0, dist(0, R, P) − 1).
+With ≤4 boxes there are few assignments, so it uses brute force, not the Hungarian algorithm.
+It's strong when boxes have far to go (it counts every box's moves at full price) and when boxes compete for the same goal. It ignores the robot's walking between boxes.
+
+**h_tour: the robot's view.**
+robot moves + Σ over unplaced boxes of [ w × shift to the nearest accepted goal + operations (2 on the floor, 1 held) ].
+- **Robot moves:** min over orders of the unplaced floor boxes (≤ 24) of
+  - the walk to the first box, max(0, dist(0, R, P₁) − 1),
+  - the box-to-box legs, max(0, dist(0, Pᵢ, Pᵢ₊₁) − 2) (both ends are next to a box),
+  - "last", the moves the last box still needs once picked: max(0, dist(0, P, g) − 2), or for a held box alone, max(0, dist(0, R, g) − 1).
+- It uses the empty-robot grid for the last moves: a box moved hand-over-hand needs no robot step for those cells.
+
+It's strong when boxes are far from the robot and from each other. Its weakness is that it only counts the robot's steps under the last box.
+
+**h = max(h_match, h_tour).** Both fail on a dead state (some box can't reach any goal even in the relaxation), and the search prunes it.
+
+Neither dominates (both are tests in `tests/test_heuristic.pl`):
+- Boxes each one cell from a goal, far from the robot and from each other: h_match = 10, h_tour = 17.
+- Two boxes next to the robot, both far from the goals: h_match = 50, h_tour = 38.
 
 ### Proofs to write (report)
-1. `dist` is a lower bound (it's a relaxation: fewer restrictions than the real moves).
-2. Box cost lower bound ≤ the true cost to place that box.
-3. h_match is admissible (each box needs its own goal, and each box's cost is a lower bound).
-4. h_far is admissible (the robot has to reach that box and deliver it at some point).
-5. The max of admissible heuristics is admissible.
-6. Neither heuristic dominates (the counterexample above).
-7. A* with a best-g table (reopening) is optimal with an admissible heuristic.
+1. **`dist` is a lower bound.** It's a relaxation: it drops doors, boxes and belt direction, so every real path is also a relaxed path. A belt ride of length L moves the robot ≤ L relaxed cells.
+2. **Shift is a lower bound on the cells a box moves.** The box rests on, or is held over, cells that hold w. Each PICK, carried step or DROP moves it to an adjacent cell (a ride moves it ≤ L cells, and L is charged). So its path is a relaxed w-path from P to g.
+3. **h_match is admissible.**
+   - Moving a box one cell costs ≥ 1 + w, and different boxes' moves are different actions, since the robot holds one box at a time.
+   - The robot's walk to its first pick happens before any box moves, so it's disjoint from those moves.
+   - Boxes end on distinct goals, and the plan's assignment is one of the assignments h_match minimizes over.
+4. **h_tour is admissible.**
+   - Bound each part of the cost split separately.
+   - Weight ≥ Σ w × shift (proof 2), and operations ≥ one PICK + one DROP per unplaced floor box (1 for a held one).
+   - Robot moves: order the boxes by first pick. The robot stands next to each in turn, and after the last first pick it walks from next to P (or R) to next to g. The triangle inequality on `dist(0)` then gives the bound.
+5. **The max of admissible heuristics is admissible.**
+6. **Neither heuristic dominates:** the two states above.
+7. **A\* with a best-g table (reopening) is optimal with an admissible heuristic.** Pruning dead states is safe: their true cost is infinite.
+
+Checked by tests: at every state on a UCS-optimal plan of 9 small levels (fragile, belt, door, blocker, pinned and any-goal, weights 1–3), both heuristics are ≤ the true remaining cost. On 3 of those levels, the same holds for every child of those states (good and bad moves), against a UCS solve from that child.
 
 ---
 
@@ -209,7 +232,7 @@ One idea per file:
 |---|---|
 | `level.pl` | `load_level/1`. Dynamic facts: `wall/1`, `goal/2`, `box_start/2`, `weight/2`, `target/2`, `fragile/2`, `belt/3` (entry, exit, length), `belt_cell/1`, `plate/1`, `door/1`, `robot_start/1` |
 | `rules.pl` | `can_hold/2`, `door_open/1`, `step/4` (a single step or a belt ride), shortest path, `action/4` (fetch/deliver with cost), `goal_state/1` |
-| `heuristic.pl` | `dist/4` table built at load, `h_match/2`, `h_far/2`, `h/2` = max |
+| `heuristic.pl` | `dist/4` table built at load (`build_dist/0`), `h_match/2`, `h_tour/2`, `h/2` = max |
 | `search.pl` | The best-first loop, `priority/4` (with A* tie-breaking), the best-g table, node count |
 | `solve.pl` | Entry points: `validate/2`, `solve/4`, macro plan → step plan |
 
@@ -249,7 +272,7 @@ can_hold(C, W) :- fragile(C, Max), W =< Max.
 
 **Write fresh**
 - `search.pl`: a new best-first loop with a best-g table (reopening). Only the idea of `priority/4` carries over, not the old code
-- `rules.pl`, `heuristic.pl` (h_far, dist tables), `solve.pl` (validator, plan expansion)
+- `rules.pl`, `heuristic.pl` (h_tour, dist tables), `solve.pl` (validator, plan expansion)
 - Bridge input checks + level → term conversion
 
 UI parts (`gui.py`, `theme.py`, assets, editor) are the teammate's call.
@@ -264,7 +287,7 @@ UI parts (`gui.py`, `theme.py`, assets, editor) are the teammate's call.
 - A door is a wall with no box on a plate, and open with one.
 - PICK of a plate box from a door cell is illegal.
 - A box with a pinned goal doesn't count as done on a different goal.
-- h_match and h_far ≤ the UCS cost on a set of small levels (admissibility check).
+- h_match and h_tour ≤ the UCS cost on a set of small levels (admissibility check).
 - The doorstop level (2 boxes) is solvable. The same level with 1 box is reported unsolvable.
 - UCS and A* return the same cost. Greedy returns a cost ≥ that.
 
@@ -279,7 +302,7 @@ UI parts (`gui.py`, `theme.py`, assets, editor) are the teammate's call.
 1. `level.pl` + bridge level → term, with tests.
 2. `rules.pl` single steps and actions, with tests for every rule in section 2.
 3. `search.pl` with UCS (h = 0). Solve tiny levels.
-4. `heuristic.pl`: dist tables, h_match, h_far, max. Admissibility tests against UCS.
+4. `heuristic.pl`: dist tables, h_match, h_tour, max. Admissibility tests against UCS.
 5. Greedy and A* priorities.
 6. `solve.pl`: validator + plan expansion.
 7. Bridge `validate`/`solve` final. Hand the contract to the teammate.
@@ -288,7 +311,6 @@ UI parts (`gui.py`, `theme.py`, assets, editor) are the teammate's call.
 ---
 
 ## 10. Open items
-- **Heuristic design (section 3) is a draft.** Redo it in a dedicated session. It's graded on quality and on the max-combination technique.
 - Grid/box caps are provisional until step 8.
 - **Fallbacks if step 8 shows UCS/A* too slow, in this order:**
   1. Treat identical-weight boxes in any-goal mode as interchangeable (store them sorted by position, not id). Up to ×24 fewer states with 4 identical boxes, and still optimal.

@@ -22,7 +22,7 @@ test(drop_onto, [setup(load([], [box(a, 2-2, 3, any), box(b, 2-4, 2, any)], 1-1,
     children(state(4-5, a, [b-(2-4)]), A3),
     \+ memberchk(deliver(a, _, 5-5)-_, A3),
     children(state(4-5, b, [a-(2-2)]), A2),
-    memberchk(deliver(b, 4-5, 5-5)-1, A2).
+    memberchk(deliver(b, 4-5, 5-5)-3, A2).
 test(pick_while_standing_on, [setup(load([], [box(a, 6-5, 3, any)], 5-5,
                                          [[fragile(5-5, 2)], [], [], []]))]) :-
     children(state(5-5, none, [a-(6-5)]), As),
@@ -73,7 +73,7 @@ test(last_plate_box, [setup(load([], [box(a, 3-3, 1, any)], 5-3, [[], [], [3-3],
 test(other_plate_still_covered,   % door stays open after the lift, so the pick is fine
      [setup(load([], [box(a, 3-3, 1, any), box(b, 7-7, 1, any)], 5-3, [[], [], [3-3, 7-7], [4-3]]))]) :-
     children(state(5-3, none, [a-(3-3), b-(7-7)]), As),
-    memberchk(fetch(a, 4-3)-2, As).
+    memberchk(fetch(a, 4-3)-3, As).
 
 :- end_tests(pick_plate_box_from_door).
 
@@ -92,10 +92,10 @@ test(initial, S == state(1-1, none, [a-(4-4), b-(5-5)])) :- initial_state(S).
 :- begin_tests(actions, [setup(load([], [box(a, 4-1, 2, any), box(b, 1-3, 1, any)], 1-1,
                                     [[], [], [], []]))]).
 
-test(fetch_cost, [nondet, true(C == 3)]) :- action(state(1-1, none, [a-(4-1), b-(1-3)]), fetch(a, 3-1), C, _).
+test(fetch_cost, [nondet, true(C == 5)]) :- action(state(1-1, none, [a-(4-1), b-(1-3)]), fetch(a, 3-1), C, _).
 test(fetch_next, [nondet, true(N == state(3-1, a, [b-(1-3)]))]) :-
     action(state(1-1, none, [a-(4-1), b-(1-3)]), fetch(a, 3-1), _, N).
-test(deliver_cost, [nondet, true(C == 10)]) :-       % 3 carried steps x (1 + 2) + DROP
+test(deliver_cost, [nondet, true(C == 12)]) :-       % 3 carried steps x (1 + 2) + DROP (1 + 2)
     action(state(3-1, a, [b-(1-3)]), deliver(a, 6-1, 7-1), C, _).
 test(deliver_next, [nondet, true(N == state(6-1, none, [a-(7-1), b-(1-3)]))]) :-
     action(state(3-1, a, [b-(1-3)]), deliver(a, 6-1, 7-1), _, N).
