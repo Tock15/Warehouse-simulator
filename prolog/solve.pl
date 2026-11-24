@@ -4,6 +4,8 @@
 :- use_module(rules).
 :- use_module(heuristic).
 :- use_module(search).
+:- use_module(library(time)).
+:- dynamic guard_seconds/1.
 
 % load(+Level): assert the level's facts and build its distance tables.
 load(L) :- load_level(L), build_dist.
@@ -117,10 +119,30 @@ expand(state(R, Id, Bs), deliver(Id, St, Tg), Steps) :-
 %% Bridge-facing shapes: flat lists of atoms and integers, which PySwip turns into Python lists.
 
 % bridge_validate(+Level, -Out): [ok] or [error, Reason].
-bridge_validate(L, Out) :- validate(L, R), flat(R, Out).
+bridge_validate(L, Out) :- guarded(validate(L, R), R, Out).
 
 % bridge_solve(+Level, +Algo, -Out): [found, Steps, Cost, Nodes], [no_solution], [error, Reason].
-bridge_solve(L, Algo, Out) :- solve(L, Algo, R), flat(R, Out).
+bridge_solve(L, Algo, Out) :- guarded(solve(L, Algo, R), R, Out).
+
+% guard_seconds(?S): how long one UI call may search. Not a search limit (the search itself has
+% none): a guard so the UI gets an answer instead of waiting forever or crashing.
+guard_seconds(120).
+
+% guarded(+Goal, ?Result, -Out): run Goal, which binds Result, and flatten it. A timeout or a
+% full Prolog stack becomes [error, Reason]; any other exception is passed on.
+guarded(G, R, Out) :-
+    guard_seconds(S),
+    catch(call_with_time_limit(S, G), E, true),
+    (   var(E)
+    ->  flat(R, Out)
+    ;   too_big(E)
+    ->  Out = [error, 'This level is too big to check in time']
+    ;   throw(E)
+    ).
+
+% too_big(+Exception): the search ran out of time or memory.
+too_big(time_limit_exceeded).
+too_big(error(resource_error(_), _)).
 
 % flat(+Result, -Out): a result as a flat list.
 flat(ok, [ok]).

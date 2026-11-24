@@ -90,4 +90,10 @@ test(flat, [nondet, true(Out = [found, _, 11, _])]) :-
     lv(base, L), bridge_solve(L, astar, Out),
     Out = [found, Fs, _, _], last(Fs, [drop, a, 6, 1]).
 
+% With a tiny guard the bridge answers "too big" instead of hanging; the guard is restored after.
+test(guard, [ setup((retract(solve:guard_seconds(Old)), assertz(solve:guard_seconds(0.001)))),
+              cleanup((retractall(solve:guard_seconds(_)), assertz(solve:guard_seconds(Old)))),
+              true(Out == [error, 'This level is too big to check in time']) ]) :-
+    lv(doorstop, L), bridge_validate(L, Out).
+
 :- end_tests(solve).

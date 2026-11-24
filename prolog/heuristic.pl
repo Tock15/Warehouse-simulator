@@ -9,38 +9,42 @@
 :- use_module(level).
 :- use_module(rules).
 :- use_module(library(assoc)).
-:- dynamic dist_row/3.
+:- dynamic dist_key/2, box_goal/3.
 
 % h(+State, -H): the combined heuristic. A max of admissible heuristics is admissible.
 h(S, H) :- h_match(S, H1), h_tour(S, H2), H is max(H1, H2).
 
 %% Distance tables ------------------------------------------------------------------------------
 
-% build_dist: dist_row(W, From, Row) for W = 0..3 and every non-wall From, Row = row(D0..D99)
-% indexed by cell number (n = unreachable). Run once after load_level/1.
+% build_dist: the per-level tables, run once after load_level/1.
+%   dist_key(K, D): K = 10000 W + 100 From + To (cell numbers), one fact per reachable pair.
+%   A single small integer key: the clause index finds it at once and nothing big is copied.
+%   box_goal(Id, G, Cell): box Id may finish on goal G at Cell.
 build_dist :-
-    retractall(dist_row(_, _, _)),
+    retractall(dist_key(_, _)), retractall(box_goal(_, _, _)),
     forall(( between(0, 3, W), between(0, 99, I), cell_at(I, C), \+ wall(C) ),
-           ( bfs(W, C, Row), assertz(dist_row(W, I, Row)) )).
+           ( bfs(W, C, A), forall(gen_assoc(To, A, D), add_dist(W, C, To, D)) )),
+    forall(( box_start(Id, _), goal(G, C), accepts(Id, C) ), assertz(box_goal(Id, G, C))).
 
 % dist(+W, +From, +To, -D): relaxed shortest path for a robot carrying weight W: walls block,
 % cells entered must hold W, belt cells are plain floor both ways, doors and boxes are ignored.
 % Fails if To is unreachable. Fewer restrictions than the real moves, so D is a lower bound.
-dist(W, A, B, D) :-
-    cell_at(IA, A), dist_row(W, IA, Row),
-    cell_at(IB, B), J is IB + 1, arg(J, Row, D),
-    integer(D).
+dist(W, AX-AY, BX-BY, D) :-
+    K is 10000 * W + 1000 * AY + 100 * AX + 10 * BY + BX,
+    dist_key(K, D).
 
-% cell_at(?I, ?Cell): cell number I = 10 * Y + X.
-cell_at(I, X-Y) :- integer(I), !, X is I mod 10, Y is I // 10.
-cell_at(I, X-Y) :- I is 10 * Y + X.
+% add_dist(+W, +From, +To, +D): store one table entry.
+add_dist(W, AX-AY, BX-BY, D) :-
+    K is 10000 * W + 1000 * AY + 100 * AX + 10 * BY + BX,
+    assertz(dist_key(K, D)).
 
-% bfs(+W, +Start, -Row): unit-cost distances from Start in the relaxed grid for weight W.
-bfs(W, S, Row) :-
+% cell_at(+I, -Cell): cell number I = 10 * Y + X.
+cell_at(I, X-Y) :- X is I mod 10, Y is I // 10.
+
+% bfs(+W, +Start, -Dists): assoc Cell -> unit-cost distance from Start in the relaxed grid.
+bfs(W, S, A) :-
     list_to_assoc([S-0], A0),
-    layers([S]-0, W, A0, A),
-    findall(D, ( between(0, 99, I), cell_at(I, C), ( get_assoc(C, A, D) -> true ; D = n ) ), Ds),
-    Row =.. [row|Ds].
+    layers([S]-0, W, A0, A).
 
 % layers(+Frontier-D, +W, +Seen0, -Seen): breadth-first, one distance layer per call.
 layers([]-_, _, A, A).
@@ -74,7 +78,7 @@ held(R, Id, [box(Id, held(R), W)]) :- Id \== none, weight(Id, W).
 
 % unplaced(+Box): the box still has work to do (held, or not on a goal it accepts).
 unplaced(box(_, held(_), _)).
-unplaced(box(Id, at(P), _)) :- \+ accepts(Id, P).
+unplaced(box(Id, at(P), _)) :- \+ box_goal(Id, _, P).
 
 % shift(+Box, +Goal, -D): lower bound on the cells the box moves to end on Goal. The box only
 % rests on, or is held over, cells that hold w, and each PICK, carried step or DROP moves it
@@ -86,7 +90,7 @@ shift(box(_, held(R), W), G, D) :- dist(W, R, G, D0), D is max(1, D0).
 % option(+Box, -Goal-Cost): a goal the box accepts, and (1 + w) x shift.
 option(B, G-Cost) :-
     B = box(Id, _, W),
-    goal(G, GC), accepts(Id, GC),
+    box_goal(Id, G, GC),
     shift(B, GC, D),
     Cost is (1 + W) * D.
 
@@ -143,8 +147,8 @@ h_tour(state(R, Held, Boxes), H) :-
 % job(+Box, -Job): the box's bounds over its accepted goals (fails if it can reach none).
 job(B, j(Where, W, Shift, Ops, Last)) :-
     B = box(Id, Where, W),
-    aggregate_all(min(D), ( goal(_, GC), accepts(Id, GC), shift(B, GC, D) ), Shift),
-    aggregate_all(min(M), ( goal(_, GC), accepts(Id, GC), last_moves(Where, GC, M) ), Last),
+    aggregate_all(min(D), ( box_goal(Id, _, GC), shift(B, GC, D) ), Shift),
+    aggregate_all(min(M), ( box_goal(Id, _, GC), last_moves(Where, GC, M) ), Last),
     ops(Where, Ops).
 
 % ops(+Where, -N): PICKs + DROPs still needed at least.

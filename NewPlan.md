@@ -105,7 +105,7 @@ priority(astar,  G, H, F-NegG) :- F is G + H, NegG is -G.   % tie on f: prefer l
   - **UCS only has to finish on the fixed benchmark levels** (the report's optimal reference). It has no heuristic, so it isn't expected to handle every user-built level quickly.
 - **Branching:** A* still *generates* ~100 children per deliver, but only *expands* promising ones. Bad parking moves stay in the queue. So the heuristic must be cheap to evaluate: table lookups and ≤24 permutations, no path search inside h.
 - **Keep a best-g table, not a closed set.** A state is skipped only if it was already reached with a g that's ≤ the new one. A* with an admissible (but possibly inconsistent) heuristic then stays optimal. The old closed-on-first-pop approach could lose optimality, since a max of heuristics isn't guaranteed to be consistent.
-- No limits. The state space is finite (≤4 boxes on a 10×10 grid), so search always ends with a plan or `no_solution`.
+- No limits in the search. The state space is finite (≤4 boxes on a 10×10 grid), so search always ends with a plan or `no_solution`. The bridge adds one guard, so the UI never waits forever: a call that runs past 120 s or fills the Prolog stack returns "This level is too big to check in time". This is a UI guard, not a search statistic.
 - Count expanded nodes. That single number is the only statistic kept (A* vs greedy vs UCS).
 
 ### Heuristics
@@ -210,7 +210,7 @@ The space is finite and there are no limits, so this always finishes.
 ### Calls
 | Call | Returns |
 |---|---|
-| `validate(level)` | `{"ok": True}` or `{"ok": False, "reason": "3 boxes but 2 goals"}` |
+| `validate(level)` | `{"ok": True}` or `{"ok": False, "reason": "3 boxes but 2 goals"}`. Can take up to ~1 min on open 4-box levels; past 120 s the reason is "This level is too big to check in time" |
 | `solve(level, algo)` with `algo` ∈ `"astar" \| "greedy" \| "ucs"` | `{"plan": [...], "cost": 17, "nodes": 812}`, or `None` if unsolvable. Raises `ValueError` if a cheap check fails (call `validate` first) |
 
 Plan steps for the UI to animate:
@@ -318,8 +318,12 @@ UI parts (`gui.py`, `theme.py`, assets, editor) are the teammate's call.
 ---
 
 ## 10. Open items
-- Grid/box caps are provisional until step 8.
-- **Fallbacks if step 8 shows UCS/A* too slow, in this order:**
-  1. Treat identical-weight boxes in any-goal mode as interchangeable (store them sorted by position, not id). Up to ×24 fewer states with 4 identical boxes, and still optimal.
-  2. Lower the box cap to 3.
+- **Caps after step 8: 10×10 board, 4 boxes kept.** Measured with `bench/bench.pl` (single runs, wall-clock):
+  - A* takes ≤ 2 s on 3 boxes, and on 4 boxes in an aisle (shelf) layout.
+  - A* takes ~50 s on 4 boxes on a fully open floor (~14k expansions), the worst case seen.
+  - UCS only finishes on 2-box levels; with 3+ boxes it times out or fills the stack. So the report's UCS reference uses 2-box levels.
+  - The UI should show a "validating…" state.
+- **If the wait gets annoying, in this order:**
+  1. Lower the box cap to 3: one line in `problem/1`.
+  2. Treat identical-weight any-goal boxes as interchangeable (store them sorted by position, not id). Up to ×24 fewer states, still optimal, but plan expansion must then map ids back so the UI animates the right box.
 - The teammate should confirm the plan-step format before animating it.
