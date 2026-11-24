@@ -12,6 +12,9 @@ dependencies = [
     "pyswip>=0.3.3",
 ]
 
+[project.scripts]
+warehouse-viewer = "warehouse_robot.viewer:main"
+
 [build-system]
 requires = ["uv_build>=0.12.20,<0.14.0"]
 build-backend = "uv_build"
