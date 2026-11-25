@@ -1,8 +1,8 @@
 """Dev viewer: draws the test levels with basic shapes and plays solver plans. Not the real UI.
 
 Run: uv run warehouse-viewer
-Screens: home (LEVELS / CREATE) -> level selector -> play (EXIT / SOLVE with A* / RESET), and the level
-creator (see creator.py).
+Screens: home (LEVELS / CREATE) -> level selector -> play (EXIT / SOLVE / RESET), and the level creator
+(see creator.py). SOLVE asks which algorithm to use: A*, UCS or greedy.
 Keyboard shortcuts while playing: A/G/U = solve with A*/greedy/UCS, R = reset, Esc = exit. Esc on home quits."""
 import math
 from pathlib import Path
@@ -34,6 +34,8 @@ BTN_RESET = ((225, 145, 40), (255, 200, 95), (155, 85, 20))
 BTN_NAV = ((85, 115, 200), (140, 170, 240), (45, 65, 135))
 BTN_OFF = ((105, 105, 120), (140, 140, 155), (70, 70, 85))
 ALGO_NAME = {"astar": "A*", "greedy": "GREEDY", "ucs": "UCS"}
+ALGO_CHOICES = [("astar", "a*", "optimal, guided", BTN_SOLVE), ("ucs", "ucs", "optimal, slow", BTN_NAV),
+                ("greedy", "greedy", "quick, may cost more", BTN_RESET)]  # the "solve with" picker, top to bottom
 TITLE, TITLE_EDGE = (255, 205, 70), (20, 18, 35)
 WIN_W, WIN_H = BOARD, BOARD + BAR
 
@@ -406,6 +408,17 @@ class Viewer:
     def __init__(self, creator):
         self.screen, self.idx, self.creator = "home", 0, creator
         self.pb = Playback(*LEVELS[0])
+        self.picker = None  # while the "solve with" picker is open: the function to call with the chosen algo
+
+    def ask(self, solve):
+        """Open the algorithm picker; solve(algo) runs once one is chosen."""
+        self.picker = solve
+        return True
+
+    def pick(self, algo):
+        solve, self.picker = self.picker, None
+        if algo:
+            solve(algo)
 
     def go(self, screen):
         self.screen = screen
@@ -427,8 +440,53 @@ def buttons(vw):
     w = (BOARD - 2 * margin - 2 * gap) // 3
     row = [pygame.Rect(margin + i * (w + gap), BOARD + BAR - h - 12, w, h) for i in range(3)]
     return [(row[0], "exit", BTN_NAV, lambda: vw.go("select"), 2),
-            (row[1], "solving" if vw.pb.pending else "solve", BTN_OFF if vw.pb.pending else BTN_SOLVE, vw.pb.solve, 2),
+            (row[1], "solving" if vw.pb.pending else "solve", BTN_OFF if vw.pb.pending else BTN_SOLVE,
+             lambda: vw.pb.pending or vw.ask(vw.pb.solve), 2),
             (row[2], "reset", BTN_RESET, vw.pb.restart, 2)]
+
+
+def picker_layout():
+    """The "solve with" panel, centred on the board: [(rect, label, description, palette, algo or None)]."""
+    w, h, bw = 440, 18 + 40 + 3 * 58 + 10 + 44 + 20, 120
+    panel = pygame.Rect((BOARD - w) // 2, (BOARD - h) // 2, w, h)
+    x, y = panel.x + 24, panel.y + 58
+    items = [(pygame.Rect(x, y + i * 58, bw, 48), label, about, colors, algo)
+             for i, (algo, label, about, colors) in enumerate(ALGO_CHOICES)]
+    items.append((pygame.Rect(x, panel.bottom - 64, w - 48, 44), "cancel", "", BTN_OFF, None))
+    return panel, items
+
+
+def picker_event(vw, ev):
+    """The picker takes all mouse and key input while open (1/2/3 or A/U/G pick, Esc cancels).
+    Returns True if ev was consumed."""
+    if ev.type == pygame.KEYDOWN:
+        keys = {pygame.K_1: "astar", pygame.K_a: "astar", pygame.K_2: "ucs", pygame.K_u: "ucs",
+                pygame.K_3: "greedy", pygame.K_g: "greedy"}
+        if ev.key in keys or ev.key == pygame.K_ESCAPE:
+            vw.pick(keys.get(ev.key))
+        return True
+    if ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+        for r, _, _, _, algo in picker_layout()[1]:
+            if r.collidepoint(ev.pos):
+                vw.pick(algo)
+                break
+        return True
+    return ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION)
+
+
+def draw_picker(screen, mouse):
+    shade = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+    shade.fill((10, 10, 20, 150))
+    screen.blit(shade, (0, 0))
+    panel, items = picker_layout()
+    notched(screen, panel.move(0, PX), UI_EDGE)
+    notched(screen, panel, UI_EDGE)
+    pygame.draw.rect(screen, UI_BG, panel.inflate(-2 * PX, -2 * PX))
+    screen.blit(pixelfont.render("solve with", 3, UI_EDGE), (panel.x + 27, panel.y + 21))
+    screen.blit(pixelfont.render("solve with", 3, TITLE), (panel.x + 24, panel.y + 18))
+    for r, label, about, colors, _ in items:
+        draw_button(screen, r, label, colors, hover=r.collidepoint(mouse))
+        screen.blit(pixelfont.render(about, 2, UI_DIM), (r.right + 16, r.y + 15))
 
 
 def draw_menu(screen, art, vw):
@@ -475,7 +533,7 @@ def main():
 
     def current_buttons():
         if vw.screen == "create":
-            return creator.creator_buttons(cr, lambda: vw.go("home"))
+            return creator.creator_buttons(cr, lambda: vw.go("home"), vw.ask)
         return buttons(vw)
 
     def on_board(pos):
@@ -491,6 +549,8 @@ def main():
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
+            elif vw.picker and picker_event(vw, ev):
+                pass  # the "solve with" picker takes all input while open
             elif vw.screen == "create" and cr.dialog and cr.dialog_event(ev):
                 pass  # the creator's details dialog takes all input while open
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:  # one screen back; quit from home
@@ -531,6 +591,8 @@ def main():
             draw_button(screen, r, text, colors, hover=over, down=over and held == (vw.screen, i), scale=scale)
         if vw.screen == "create" and cr.dialog:
             cr.draw_dialog(screen, mouse)
+        if vw.picker:
+            draw_picker(screen, mouse)
         pygame.display.flip()
 
     bridge.shutdown()

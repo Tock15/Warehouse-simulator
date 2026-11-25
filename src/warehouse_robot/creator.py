@@ -253,15 +253,19 @@ class Creator:
         if msg:
             self.status = msg
 
-    def solve(self):
+    def ready(self):
+        """Whether SOLVE may go ahead (then the algorithm is asked for); says why not in the status line."""
         if self.pb and self.pb.pending:
-            return
+            return False
         self.cancel()
         if self.robot is None:
             self.status = "place the robot first"
-            return
+            return False
+        return True
+
+    def solve(self, algo="astar"):
         self.pb = Playback("custom level", self.level())
-        self.pb.solve()
+        self.pb.solve(algo)
 
     # ---- details dialog (crate weight and goal, fragile floor limit) ----
 
@@ -438,12 +442,14 @@ class Creator:
                 screen.blit(pixelfont.render("placed", 1, UI_DIM), (r.right - 44, r.y + 16))
 
 
-def creator_buttons(cr, exit_):
-    """(rect, label, palette, action, text scale) for the creator's bottom bar."""
+def creator_buttons(cr, exit_, ask):
+    """(rect, label, palette, action, text scale) for the creator's bottom bar. ask(fn) asks for the algorithm
+    and calls fn(algo)."""
     gap, margin, h = 10, 12, 48
     w = (WIDTH - 2 * margin - 2 * gap) // 3
     row = [pygame.Rect(margin + i * (w + gap), BOARD + BAR - h - 12, w, h) for i in range(3)]
     busy = bool(cr.pb and cr.pb.pending)
-    return [(row[0], "solving" if busy else "solve", BTN_OFF if busy else BTN_SOLVE, cr.solve, 2),
+    return [(row[0], "solving" if busy else "solve", BTN_OFF if busy else BTN_SOLVE,
+             lambda: cr.ready() and ask(cr.solve), 2),
             (row[1], "reset", BTN_RESET, cr.reset, 2),
             (row[2], "exit", BTN_NAV, exit_, 2)]
