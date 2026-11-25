@@ -41,6 +41,9 @@ ALGO_CHOICES = [("astar", "a*", "optimal, guided", BTN_SOLVE), ("ucs", "ucs", "o
                 ("greedy", "greedy", "quick, may cost more", BTN_RESET)]  # the "solve with" picker, top to bottom
 TITLE, TITLE_EDGE = (255, 205, 70), (20, 18, 35)
 WIN_W, WIN_H = BOARD, BOARD + BAR
+LIST_VIEW = pygame.Rect(0, 80, WIN_W, WIN_H - 100 - 80)  # level selector: the scrolling part, between title and BACK
+ROW_W, ROW_H, ROW_PITCH, SCROLL_EASE = 420, 44, 52, 14
+SCROLL_TRACK = pygame.Rect((WIN_W + ROW_W) // 2 + 14, LIST_VIEW.y + 8, 12, LIST_VIEW.h - 16)
 
 
 def room(mx, my):
@@ -421,6 +424,8 @@ class Viewer:
 
     def __init__(self, creator):
         self.screen, self.idx, self.creator = "home", 0, creator
+        self.scroll = self.scroll_to = 0.0
+        self.dragging = False  # the selector's scrollbar thumb is being dragged
         self.pb = Playback(*LEVELS[0])
         self.picker = None  # while the "solve with" picker is open: the function to call with the chosen algo
 
@@ -437,19 +442,58 @@ class Viewer:
     def go(self, screen):
         self.screen = screen
 
+    # ---- level selector scrolling: scroll eases towards scroll_to, both in pixels from the top ----
+
+    def max_scroll(self):
+        return max(0, len(LEVELS) * ROW_PITCH + 8 - LIST_VIEW.h)
+
+    def scroll_by(self, d):
+        self.scroll_to = min(self.max_scroll(), max(0, self.scroll_to + d))
+
+    def ease_scroll(self, dt):
+        self.scroll += (self.scroll_to - self.scroll) * min(1.0, dt * SCROLL_EASE)
+        if abs(self.scroll_to - self.scroll) < 0.5:
+            self.scroll = self.scroll_to
+
+    def thumb(self):
+        """Scrollbar thumb rect, or None when every level fits."""
+        if not self.max_scroll():
+            return None
+        h = max(24, SCROLL_TRACK.h * LIST_VIEW.h // (LIST_VIEW.h + self.max_scroll()))
+        y = SCROLL_TRACK.y + round((SCROLL_TRACK.h - h) * self.scroll / self.max_scroll())
+        return pygame.Rect(SCROLL_TRACK.x, y, SCROLL_TRACK.w, h)
+
+    def drag_thumb(self, mouse_y):
+        """Scroll so the thumb's middle follows the mouse (dragging, or clicking the track)."""
+        h = self.thumb().h
+        frac = (mouse_y - SCROLL_TRACK.y - h / 2) / max(1, SCROLL_TRACK.h - h)
+        self.scroll_to = self.scroll = min(self.max_scroll(), max(0.0, frac * self.max_scroll()))
+
     def play(self, i):
         self.idx, self.pb, self.screen = i, Playback(*LEVELS[i]), "play"
 
 
+SCROLL_KEYS = {pygame.K_UP: -ROW_PITCH, pygame.K_DOWN: ROW_PITCH, pygame.K_PAGEUP: -LIST_VIEW.h,
+               pygame.K_PAGEDOWN: LIST_VIEW.h, pygame.K_HOME: -10_000, pygame.K_END: 10_000}
+
+
+def hits(b, pos):
+    """pos is on button b, and inside its clip area if it has one."""
+    return b[0].collidepoint(pos) and (len(b) < 6 or b[5].collidepoint(pos))
+
+
 def buttons(vw):
-    """(rect, label, palette, action, text scale) for every button on the current screen."""
+    """(rect, label, palette, action, text scale[, clip]) for every button on the current screen. A button
+    with a clip rect is drawn and clickable only inside it (the scrolling level list)."""
     if vw.screen == "home":
         return [(centred(280, 64, 400), "levels", BTN_SOLVE, lambda: vw.go("select"), 3),
                 (centred(280, 64, 482), "create", BTN_RESET, lambda: vw.go("create"), 3)]
     back = (centred(220, 52, WIN_H - 76), "< back", BTN_RESET, lambda: vw.go("home"), 2)
     if vw.screen == "select":
-        return [(centred(420, 44, 92 + i * 52), f"{i + 1}. {name}", BTN_NAV, lambda i=i: vw.play(i), 2)
-                for i, (name, _) in enumerate(LEVELS)] + [back]
+        top = LIST_VIEW.y + 8 - round(vw.scroll)
+        rows = [(centred(ROW_W, ROW_H, top + i * ROW_PITCH), f"{i + 1}. {name}", BTN_NAV, lambda i=i: vw.play(i), 2,
+                 LIST_VIEW) for i, (name, _) in enumerate(LEVELS)]
+        return [b for b in rows if b[0].colliderect(LIST_VIEW)] + [back]
     gap, margin, h = 10, 12, 48  # play: the bar under the board
     w = (BOARD - 2 * margin - 2 * gap) // 3
     row = [pygame.Rect(margin + i * (w + gap), BOARD + BAR - h - 12, w, h) for i in range(3)]
@@ -515,6 +559,11 @@ def draw_menu(screen, art, vw):
         screen.blit(art["crate"], art["crate"].get_rect(midbottom=(bot.centerx, bot.top + 20)))
     else:
         shadow_text(screen, "select level", 4, TITLE, (WIN_W // 2, 46))
+        thumb = vw.thumb()
+        if thumb:  # pixel scrollbar: dark track, light thumb
+            notched(screen, SCROLL_TRACK, UI_EDGE)
+            notched(screen, thumb, BTN_NAV[1] if vw.dragging else BTN_NAV[0])
+            pygame.draw.rect(screen, BTN_NAV[2], (thumb.x + 3, thumb.bottom - 3, thumb.w - 6, 3))
 
 
 def draw_bar(screen, vw):
@@ -575,8 +624,11 @@ def main():
             elif ev.type == pygame.KEYDOWN and ev.key in keys and vw.screen == "play":
                 keys[ev.key]()
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 3):
-                hit = next((i for i, b in enumerate(btns) if b[0].collidepoint(ev.pos)), None)
-                if hit is not None and ev.button == 1:
+                hit = next((i for i, b in enumerate(btns) if hits(b, ev.pos)), None)
+                if vw.screen == "select" and ev.button == 1 and vw.thumb() and SCROLL_TRACK.collidepoint(ev.pos):
+                    vw.dragging = True
+                    vw.drag_thumb(ev.pos[1])
+                elif hit is not None and ev.button == 1:
                     held = (vw.screen, hit)
                 elif vw.screen == "create" and on_board(ev.pos):
                     cr.press((ev.pos[0] // CELL, ev.pos[1] // CELL), ev.button)
@@ -586,12 +638,23 @@ def main():
                 if ev.buttons[0] or ev.buttons[2]:  # drag to paint walls or erase
                     cr.press((ev.pos[0] // CELL, ev.pos[1] // CELL), 1 if ev.buttons[0] else 3, drag=True)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
-                if held and held[0] == vw.screen and btns[held[1]][0].collidepoint(ev.pos):
+                if held and held[0] == vw.screen and held[1] < len(btns) and hits(btns[held[1]], ev.pos):
                     btns[held[1]][3]()
+                held, vw.dragging = None, False
+            elif ev.type == pygame.MOUSEMOTION and vw.dragging:
+                vw.drag_thumb(ev.pos[1])
+            elif ev.type == pygame.MOUSEWHEEL and vw.screen == "select":
+                vw.scroll_by(-ev.y * ROW_PITCH)
+                held = None  # the rows move under the mouse: a press in progress no longer means that row
+            elif ev.type == pygame.KEYDOWN and vw.screen == "select" and ev.key in SCROLL_KEYS:
+                vw.scroll_by(SCROLL_KEYS[ev.key])
                 held = None
             btns = current_buttons()  # an action may have switched screens
 
         mouse = pygame.mouse.get_pos()
+        if vw.screen == "select":
+            vw.ease_scroll(dt)
+            btns = buttons(vw)  # rows move as the list scrolls
         if vw.screen == "play":
             anim = vw.pb.update(dt)
             draw(screen, font, sprites, vw.pb.lv, vw.pb.st, round(vw.pb.door_t), anim)
@@ -600,9 +663,12 @@ def main():
             cr.draw(screen, font, sprites, parts, dt, mouse)
         else:
             draw_menu(screen, art, vw)
-        for i, (r, text, colors, _, scale) in enumerate(btns):
-            over = r.collidepoint(mouse)
+        for i, b in enumerate(btns):
+            r, text, colors, _, scale = b[:5]
+            over = hits(b, mouse) and not vw.dragging
+            screen.set_clip(b[5] if len(b) > 5 else None)
             draw_button(screen, r, text, colors, hover=over, down=over and held == (vw.screen, i), scale=scale)
+            screen.set_clip(None)
         if vw.screen == "create" and cr.modal():
             cr.draw_modal(screen, mouse)
         if vw.picker:
