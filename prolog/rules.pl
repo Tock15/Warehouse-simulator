@@ -109,8 +109,8 @@ initial_state(state(R, none, Boxes)) :-
     findall(Id-P, box_start(Id, P), Bs),
     sort(Bs, Boxes).
 
-% goal_state(+State): robot empty, every box on a goal it accepts.
-goal_state(state(_, none, Boxes)) :- forall(member(Id-P, Boxes), accepts(Id, P)).
+% goal_state(+State): robot empty, every box that needs a goal on a goal it accepts.
+goal_state(state(_, none, Boxes)) :- forall(( member(Id-P, Boxes), \+ free_box(Id) ), accepts(Id, P)).
 
-% accepts(+Id, +Cell): Cell is a goal box Id may finish on.
+% accepts(+Id, +Cell): Cell is a goal box Id may finish on (none for a free box).
 accepts(Id, P) :- goal(G, P), target(Id, T), ( T == any ; T == only(G) ).

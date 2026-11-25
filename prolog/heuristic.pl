@@ -5,6 +5,8 @@
 % h_match bounds each box's own movement, with boxes on distinct goals: the boxes' view.
 % h_tour bounds the robot's route from box to box: the robot's view.
 % Both fail on a dead state: some box cannot reach any goal, even in the relaxation.
+% Free boxes (no goal) add no terms: their remaining cost is >= 0, so leaving them out keeps both
+% bounds. They still count as obstacles to walk to (first_walk), which is just as valid.
 :- module(heuristic, [build_dist/0, dist/4, h_match/2, h_tour/2, h/2]).
 :- use_module(level).
 :- use_module(rules).
@@ -76,9 +78,9 @@ boxes(state(R, Held, Boxes), All) :-
 held(_, none, []).
 held(R, Id, [box(Id, held(R), W)]) :- Id \== none, weight(Id, W).
 
-% unplaced(+Box): the box still has work to do (held, or not on a goal it accepts).
-unplaced(box(_, held(_), _)).
-unplaced(box(Id, at(P), _)) :- \+ box_goal(Id, _, P).
+% unplaced(+Box): the box needs a goal and still has work to do (held, or not on a goal it accepts).
+unplaced(box(Id, held(_), _)) :- \+ free_box(Id).
+unplaced(box(Id, at(P), _)) :- \+ free_box(Id), \+ box_goal(Id, _, P).
 
 % shift(+Box, +Goal, -D): lower bound on the cells the box moves to end on Goal. The box only
 % rests on, or is held over, cells that hold w, and each PICK, carried step or DROP moves it
@@ -101,10 +103,14 @@ option(B, G-Cost) :-
 % boxes never overlap (one box at a time), nor with that first walk.
 h_match(S, H) :-
     boxes(S, Bs),
-    maplist(options, Bs, Opts),
+    exclude(free, Bs, Gs),          % a free box has no goal options; it would make assign/3 fail
+    maplist(options, Gs, Opts),
     aggregate_all(min(C), assign(Opts, [], C), M),
     first_walk(S, Bs, Wk),
     H is M + Wk.
+
+% free(+Box): the box needs no goal.
+free(box(Id, _, _)) :- free_box(Id).
 
 % options(+Box, -Options): every Goal-Cost the box could finish on.
 options(B, Os) :- findall(O, option(B, O), Os).

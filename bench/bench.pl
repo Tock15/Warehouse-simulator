@@ -16,6 +16,9 @@ room(MX, MY, Ws) :-
 % shelves(-Walls): two rows of shelving with aisles between them.
 shelves(Ws) :- findall(X-Y, (member(Y, [3, 6]), (between(2, 4, X) ; between(6, 7, X))), Ws).
 
+% key_room(-Walls): an 8x5 room split by a wall at x = 5, with a gap for a door at 5-3.
+key_room(Ws) :- room(8, 5, Room), findall(5-Y, (between(1, 5, Y), Y =\= 3), C), append(Room, C, Ws).
+
 % level(?Name, -Level): the benchmark set, small to large.
 level(fragile, level(Ws, [goal(g1, 5-2)], [box(a, 1-2, 2, any)], 1-1,
                      [fragile(3-1, 1), fragile(3-2, 1)], [], [], [])) :- room(5, 3, Ws).
@@ -27,6 +30,14 @@ level(blocker, level(Ws, [goal(g1, 5-1), goal(g2, 4-4)],
 level(doorstop, level(Ws, [goal(g1, 7-4), goal(g2, 1-1)],
                       [box(a, 2-3, 1, only(g1)), box(b, 1-3, 1, only(g2))], 3-4, [], [], [2-1], [4-2])) :-
     room(7, 4, Room), findall(4-Y, (between(1, 4, Y), Y =\= 2), C), append(Room, C, Ws).
+% Free key box k (needs no goal): parked on the plate it holds the door open.
+level(key, level(Ws, [goal(g1, 7-4)], [box(a, 2-3, 1, only(g1)), box(k, 1-3, 1, none)], 3-4, [], [], [2-1], [4-2])) :-
+    room(7, 4, Room), findall(4-Y, (between(1, 4, Y), Y =\= 2), C), append(Room, C, Ws).
+level(heavy_key, level(Ws, [goal(g1, 8-1)], [box(a, 2-3, 1, any), box(k, 3-5, 3, none)], 4-1, [], [], [1-1], [5-3])) :-
+    key_room(Ws).
+level(key3, level(Ws, [goal(g1, 8-1), goal(g2, 8-5)], [box(a, 2-3, 1, any), box(b, 3-1, 2, any), box(k, 1-1, 2, none)],
+                  1-5, [], [], [4-5], [5-3])) :-
+    key_room(Ws).
 level(two_pinned, level(Ws, [goal(g1, 1-5), goal(g2, 5-5)],
                         [box(a, 5-2, 1, only(g1)), box(b, 1-2, 2, only(g2))], 3-1, [], [], [], [])) :-
     room(5, 5, Ws).
