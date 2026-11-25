@@ -36,6 +36,15 @@ lv(goal_walled_in, level([2-1, 1-2], [goal(g1, 6-1), goal(g2, 1-1)],
 lv(doorstop, level(Ws, [goal(g1, 7-4), goal(g2, 1-1)],
                    [box(a, 2-3, 1, only(g1)), box(b, 1-3, 1, only(g2))], 3-4, [], [], [2-1], [4-2])) :-
     room(Ws).
+% Key: like doorstop, but b is a free box. It can stay on the plate, so the door stays open and
+% g2 isn't needed. Without the free flag the level has too few goals.
+lv(key, level(Ws, [goal(g1, 7-4)], [box(a, 2-3, 1, only(g1)), box(b, 1-3, 1, none)], 3-4, [], [], [2-1], [4-2])) :-
+    room(Ws).
+lv(key_not_free, level(Ws, [goal(g1, 7-4)], [box(a, 2-3, 1, only(g1)), box(b, 1-3, 1, any)], 3-4, [], [], [2-1], [4-2])) :-
+    room(Ws).
+lv(all_free, level([], [goal(g1, 6-1)], [box(a, 3-1, 1, none)], 1-1, [], [], [], [])).
+% A free box walled into a corner is fine: it never has to move.
+lv(free_box_stuck, level([2-1, 1-2], [goal(g1, 6-1)], [box(a, 3-3, 1, any), box(k, 1-1, 1, none)], 5-5, [], [], [], [])).
 lv(doorstop_alone, level(Ws, [goal(g1, 7-4)], [box(a, 2-3, 1, only(g1))], 3-4, [], [], [2-1], [4-2])) :-
     room(Ws).
 
@@ -57,7 +66,11 @@ test(dup_box, R == 'Two boxes are named a') :- reason(dup_box, R).
 test(dup_goal, R == 'Two goals are named g1') :- reason(dup_goal, R).
 test(missing_goal, R == 'Box a needs goal g9, which does not exist') :- reason(missing_goal, R).
 test(shared_goal, R == 'Boxes a and b both need goal g1') :- reason(shared_goal, R).
-test(few_goals, R == '2 boxes but only 1 goals') :- reason(few_goals, R).
+test(few_goals, R == '2 boxes need a goal but there are only 1 goals') :- reason(few_goals, R).
+test(all_free, R == 'At least one box needs a goal') :- reason(all_free, R).
+test(key) :- lv(key, L), validate(L, ok).
+test(key_not_free, R == '2 boxes need a goal but there are only 1 goals') :- reason(key_not_free, R).
+test(free_box_stuck) :- lv(free_box_stuck, L), validate(L, ok).
 test(goal_on_wall, R == 'Cell (0, 3) is both a goal and a wall') :- reason(goal_on_wall, R).
 test(goals_stacked, R == 'Cell (6, 1) has two goals') :- reason(goals_stacked, R).
 test(belts_cross, R == 'Two belts cross at (3, 5)') :- reason(belts_cross, R).
@@ -85,6 +98,10 @@ test(steps, [nondet, true(C-Last == 11-drop(a, 6-1))]) :-
     lv(base, L), solve(L, astar, found(Steps, C, _)),
     last(Steps, Last), memberchk(pick(a), Steps).
 test(no_solution, [nondet, true(R = no_solution(_))]) :- lv(doorstop_alone, L), solve(L, astar, R).
+% The key stays on the plate (a free box need not leave), so the plan ends with a on its goal.
+test(key_ucs_equals_astar, [nondet, true(U == A)]) :-
+    lv(key, L), solve(L, ucs, found(_, U, _)), solve(L, astar, found(Steps, A, _)),
+    last(Steps, drop(a, 7-4)).
 test(malformed, R == error('Two boxes start on (3, 1)')) :- lv(boxes_stacked, L), solve(L, ucs, R).
 test(flat, [nondet, true(Out = [found, _, 11, _])]) :-
     lv(base, L), bridge_solve(L, astar, Out),

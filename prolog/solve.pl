@@ -26,6 +26,7 @@ validate(L, R) :-
 % problem(-Reason): a reason the loaded level is malformed. Clause order is check order.
 problem('A level needs 1 to 4 boxes') :-
     aggregate_all(count, box_start(_, _), N), \+ between(1, 4, N).
+problem('At least one box needs a goal') :- \+ ( box_start(B, _), \+ free_box(B) ).
 problem(R) :- duplicate(Id, box_start(Id, _)), fmt('Two boxes are named ~w', [Id], R).
 problem(R) :- duplicate(Id, goal(Id, _)), fmt('Two goals are named ~w', [Id], R).
 problem(R) :- target(B, only(G)), \+ goal(G, _), fmt('Box ~w needs goal ~w, which does not exist', [B, G], R).
@@ -33,8 +34,9 @@ problem(R) :-
     target(A, only(G)), target(B, only(G)), A @< B,
     fmt('Boxes ~w and ~w both need goal ~w', [A, B, G], R).
 problem(R) :-
-    aggregate_all(count, box_start(_, _), NB), aggregate_all(count, goal(_, _), NG), NG < NB,
-    fmt('~w boxes but only ~w goals', [NB, NG], R).
+    aggregate_all(count, ( box_start(B, _), \+ free_box(B) ), NB), aggregate_all(count, goal(_, _), NG),
+    NG < NB,
+    fmt('~w boxes need a goal but there are only ~w goals', [NB, NG], R).
 problem(R) :-
     tile(C, K1), tile(C, K2), K1 @< K2,
     fmt('Cell ~w is both a ~w and a ~w', [C, K1, K2], R).
@@ -58,7 +60,7 @@ problem(R) :- robot_start(C), box_start(B, C), fmt('The robot starts on box ~w a
 problem('There are doors but no plates to open them') :- door(_), \+ plate(_).
 problem('There are plates but no doors for them to open') :- plate(_), \+ door(_).
 problem(R) :-
-    box_start(B, P), weight(B, W),
+    box_start(B, P), \+ free_box(B), weight(B, W),
     \+ ( goal(_, G), accepts(B, G), dist(W, P, G, _) ),
     fmt('Box ~w cannot reach any goal it may finish on', [B], R).
 problem('The boxes cannot all reach different goals') :-

@@ -1,6 +1,6 @@
 % Level facts asserted by load_level/1 from one level/8 term (plan section 6).
 % Cells are X-Y. The 10x10 border is always wall, whatever the term says.
-:- module(level, [load_level/1, wall/1, goal/2, box_start/2, weight/2, target/2,
+:- module(level, [load_level/1, wall/1, goal/2, box_start/2, weight/2, target/2, free_box/1,
                   fragile/2, belt/3, belt_cell/1, plate/1, door/1, robot_start/1]).
 :- dynamic wall/1, goal/2, box_start/2, weight/2, target/2,
            fragile/2, belt/3, belt_cell/1, plate/1, door/1, robot_start/1.
@@ -29,9 +29,13 @@ clear_level :-
 % border(-Cell): Cell is on the edge of the 10x10 board.
 border(X-Y) :- between(0, 9, X), between(0, 9, Y), ( X =:= 0 ; X =:= 9 ; Y =:= 0 ; Y =:= 9 ).
 
-% add_box(+Box): assert start, weight and target (any | only(G)) of one box.
+% add_box(+Box): assert start, weight and target of one box: any, only(G), or none (a free box,
+% e.g. a key for a door, that may finish anywhere).
 add_box(box(Id, P, W, T)) :-
     assertz(box_start(Id, P)), assertz(weight(Id, W)), assertz(target(Id, T)).
+
+% free_box(?Id): box Id needs no goal.
+free_box(Id) :- target(Id, none).
 
 % add_belt(+Belt): assert belt(Entry, Exit, Length) and its belt cells.
 % Length = steps a walk would take from the cell before Entry to Exit.
