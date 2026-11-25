@@ -1,8 +1,8 @@
 """Level creator screen: an empty 10x10 room, a sidebar of parts to place, and SOLVE / RESET / EXIT.
 
 Click a part, then click (or drag, for walls and erase) on the map. Right click erases.
-- Crates and fragile floor open a details dialog once placed (weight, and the crate's goal); click one again
-  with the same part to edit it.
+- Crates and fragile floor open a details dialog once placed (weight, and the crate's goal: any, a given one,
+  or FREE = needs no goal, e.g. a key left on a pressure plate); click one again with the same part to edit it.
 - There is one robot: its part is disabled while it is on the map.
 - Two-step parts: a belt is placed as start then end (same row or column), a door is followed by its plate.
 Esc cancels a half-placed part or a dialog. SOLVE asks for an algorithm, solves the layout and plays the plan;
@@ -21,6 +21,7 @@ from warehouse_robot.viewer import (ASSETS, BAR, BOARD, BTN_NAV, BTN_OFF, BTN_RE
 SIDE = 230  # sidebar width
 WIDTH = BOARD + SIDE
 MAX_CRATES = 4
+FREE = "free"  # a crate's goal setting: needs no goal (a key for a door, or a blocker)
 TOOLS = [("wall", "wall"), ("erase", "erase"), ("robot", "robot"), ("crate", "crate"), ("goal", "goal"),
          ("fragile", "fragile"), ("belt", "belt"), ("door", "door")]
 NEXT_STAGE = {"belt": ("belt_end", "belt end"), "door": ("plate", "plate")}  # second part a tool hands over
@@ -104,7 +105,7 @@ class Creator:
         self.walls, self.plates, self.doors = set(), set(), set()
         self.goals, self.belts = [], []          # goal cells in placement order; belts as (entry, exit)
         self.fragile = {}                        # cell -> max weight it holds
-        self.crates = {}                         # cell -> (weight, goal cell it must finish on, or None = any)
+        self.crates = {}                         # cell -> (weight, goal): goal = a goal cell, None = any, FREE
         self.robot = None
         self.name = "my level"                   # used when saving
         self.stage = None                        # second half of a two-step part: (tool, first cell)
@@ -145,11 +146,12 @@ class Creator:
 
     def level(self):
         """The layout as a bridge level dict. Crates are named a, b, c, d; a crate pinned to a goal that has
-        since been erased may finish on any goal."""
+        since been erased may finish on any goal; a FREE crate is saved as "free": true."""
         ids = self.goal_ids()
         return {"walls": [list(c) for c in sorted(self.walls)],
                 "goals": [{"id": ids[c], "pos": list(c)} for c in self.goals],
-                "boxes": [{"id": "abcd"[i], "pos": list(c), "weight": w, "goal": ids.get(g)}
+                "boxes": [{"id": "abcd"[i], "pos": list(c), "weight": w, "goal": None if g == FREE else ids.get(g),
+                           "free": g == FREE}
                           for i, (c, (w, g)) in enumerate(self.crates.items())],
                 "robot": list(self.robot) if self.robot else None,
                 "fragile": [{"pos": list(c), "max_weight": m} for c, m in self.fragile.items()],
@@ -162,7 +164,8 @@ class Creator:
         ids = {g["id"]: tuple(g["pos"]) for g in lv["goals"]}
         self.walls = {tuple(c) for c in lv["walls"] if inner(tuple(c))}
         self.goals = [tuple(g["pos"]) for g in lv["goals"]]
-        self.crates = {tuple(b["pos"]): (int(b["weight"]), ids.get(b.get("goal"))) for b in lv["boxes"][:MAX_CRATES]}
+        self.crates = {tuple(b["pos"]): (int(b["weight"]), FREE if b.get("free") else ids.get(b.get("goal")))
+                       for b in lv["boxes"][:MAX_CRATES]}
         self.robot = tuple(lv["robot"]) if lv.get("robot") else None
         self.fragile = {tuple(f["pos"]): int(f["max_weight"]) for f in lv.get("fragile", [])}
         self.belts = [(tuple(b["entry"]), tuple(b["exit"])) for b in lv.get("belts", [])]
@@ -369,7 +372,7 @@ class Creator:
         The panel sits in the half of the board away from the cell being set up, so that cell stays visible."""
         d = self.dialog
         crate = d["kind"] == "crate"
-        goals = [(None, "any")] + [(c, i.upper()) for c, i in self.goal_ids().items()] if crate else []
+        goals = [(None, "any"), (FREE, "free")] + [(c, i.upper()) for c, i in self.goal_ids().items()] if crate else []
         per_row = 5
         goal_h = -(-len(goals) // per_row) * (OPT_H + OPT_GAP)
         h = 18 + 36 + 24 + OPT_H + 16 + (24 + goal_h if crate else 0) + 44 + 14
@@ -516,7 +519,7 @@ class Creator:
         shade.fill((10, 10, 20, 150))
         screen.blit(shade, (0, 0))
         pygame.draw.rect(screen, TITLE, cell_rect(d["cell"]), PX)  # the part being set up
-        if d["goal"] is not None:
+        if d["goal"] not in (None, FREE):
             pygame.draw.rect(screen, (90, 230, 120), cell_rect(d["goal"]), PX)  # its chosen goal
         panel, text, items = self.dialog_layout()
         notched(screen, panel.move(0, PX), UI_EDGE)
@@ -532,11 +535,14 @@ class Creator:
     # ---- drawing ----
 
     def counter_lines(self):
-        """The live counter under the parts: crates placed, goals placed, and a warning when goals run short."""
+        """The live counter under the parts: crates placed (and how many are free), goals placed, and a warning
+        when there are fewer goals than crates that need one."""
         crates, goals = len(self.crates), len(self.goals)
-        lines = [(f"crates {crates}/{MAX_CRATES}", UI_TEXT), (f"goals  {goals}", UI_TEXT)]
-        if goals < crates:
-            short = crates - goals
+        free = sum(g == FREE for _, g in self.crates.values())
+        lines = [(f"crates {crates}/{MAX_CRATES}", UI_TEXT)] + ([(f"  free {free}", UI_DIM)] if free else [])
+        lines.append((f"goals  {goals}", UI_TEXT))
+        if goals < crates - free:
+            short = crates - free - goals
             lines.append((f"need {short} more goal{'s' if short > 1 else ''}", WARN))
         return lines
 

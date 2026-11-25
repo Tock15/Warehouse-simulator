@@ -273,7 +273,7 @@ def draw(screen, font, sprites, lv, st, door_frame, anim=None):
     for d in lv["doors"]:
         screen.blit(sprites["door"][door_frame], rect(d))
     weight = {b["id"]: b["weight"] for b in lv["boxes"]}
-    target = {b["id"]: b["goal"] for b in lv["boxes"]}
+    target = {b["id"]: "free" if b.get("free") else b["goal"] for b in lv["boxes"]}  # free: needs no goal
     on = {c: b for b, c in st["boxes"].items()}
     for g in lv["goals"]:
         b = on.get(tuple(g["pos"]))
@@ -288,7 +288,8 @@ def draw(screen, font, sprites, lv, st, door_frame, anim=None):
         screen.blit(sprites["crate"], sprites["crate"].get_rect(center=rect(c).center))
         cx, cy = rect(c).center
         outlined(screen, font, f"{b} w{weight[b]}", (cx, cy - 6))
-        outlined(screen, font, f"->{target[b]}" if target[b] else "any", (cx, cy + 6))
+        outlined(screen, font, target[b] if target[b] == "free" else f"->{target[b]}" if target[b] else "any",
+                 (cx, cy + 6))
     if st["robot"] is None:  # a creator layout before the robot is placed
         return
     # robot: slides straight between cells and sinks under a load
