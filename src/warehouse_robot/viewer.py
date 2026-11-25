@@ -1,4 +1,7 @@
-"""Dev viewer: draws the test levels with basic shapes and plays solver plans. Not the real UI.
+"""Warehouse robot app (pygame): pixel-art board, menus and plan playback on top of the Prolog solver.
+
+This module holds the board drawing (sprites, animations), the pixel UI widgets, the built-in test levels and
+the app loop; the level creator lives in creator.py.
 
 Run: uv run warehouse-viewer
 Screens: home (LEVELS / CREATE) -> level selector -> play (EXIT / SOLVE / RESET), and the level creator
@@ -442,7 +445,7 @@ def buttons(vw):
     return [(row[0], "exit", BTN_NAV, lambda: vw.go("select"), 2),
             (row[1], "solving" if vw.pb.pending else "solve", BTN_OFF if vw.pb.pending else BTN_SOLVE,
              lambda: vw.pb.pending or vw.ask(vw.pb.solve), 2),
-            (row[2], "reset", BTN_RESET, vw.pb.restart, 2)]
+            (row[2], "reset", BTN_OFF if vw.pb.pending else BTN_RESET, lambda: vw.pb.pending or vw.pb.restart(), 2)]
 
 
 def picker_layout():
@@ -528,7 +531,7 @@ def main():
     clock, vw = pygame.time.Clock(), Viewer(creator.Creator())
     cr = vw.creator
     held = None  # (screen, index) of the button the mouse went down on; it fires if released over it
-    keys = {pygame.K_r: lambda: vw.pb.restart(), pygame.K_a: lambda: vw.pb.solve("astar"),
+    keys = {pygame.K_r: lambda: vw.pb.pending or vw.pb.restart(), pygame.K_a: lambda: vw.pb.solve("astar"),
             pygame.K_g: lambda: vw.pb.solve("greedy"), pygame.K_u: lambda: vw.pb.solve("ucs")}
 
     def current_buttons():
@@ -551,8 +554,8 @@ def main():
                 running = False
             elif vw.picker and picker_event(vw, ev):
                 pass  # the "solve with" picker takes all input while open
-            elif vw.screen == "create" and cr.dialog and cr.dialog_event(ev):
-                pass  # the creator's details dialog takes all input while open
+            elif vw.screen == "create" and cr.modal() and cr.modal_event(ev):
+                pass  # an open creator dialog (part details, save, load) takes all input
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:  # one screen back; quit from home
                 if vw.screen == "home":
                     running = False
@@ -589,8 +592,8 @@ def main():
         for i, (r, text, colors, _, scale) in enumerate(btns):
             over = r.collidepoint(mouse)
             draw_button(screen, r, text, colors, hover=over, down=over and held == (vw.screen, i), scale=scale)
-        if vw.screen == "create" and cr.dialog:
-            cr.draw_dialog(screen, mouse)
+        if vw.screen == "create" and cr.modal():
+            cr.draw_modal(screen, mouse)
         if vw.picker:
             draw_picker(screen, mouse)
         pygame.display.flip()

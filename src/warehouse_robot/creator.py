@@ -5,12 +5,16 @@ Click a part, then click (or drag, for walls and erase) on the map. Right click 
   with the same part to edit it.
 - There is one robot: its part is disabled while it is on the map.
 - Two-step parts: a belt is placed as start then end (same row or column), a door is followed by its plate.
-Esc cancels a half-placed part or a dialog. SOLVE runs A* on the layout and plays the plan; click the map to
-keep editing."""
+Esc cancels a half-placed part or a dialog. SOLVE asks for an algorithm, solves the layout and plays the plan;
+click the map to keep editing. Nothing can be edited while a solve is running.
+SAVE / LOAD keep layouts as JSON files in levels/ (the bridge's level dict, plus a "name")."""
+import json
+import re
+
 import pygame
 
 from warehouse_robot import pixelfont
-from warehouse_robot.viewer import (BAR, BOARD, BTN_NAV, BTN_OFF, BTN_RESET, BTN_SOLVE, CELL, DOOR_FRAMES, FLOOR,
+from warehouse_robot.viewer import (ASSETS, BAR, BOARD, BTN_NAV, BTN_OFF, BTN_RESET, BTN_SOLVE, CELL, DOOR_FRAMES, FLOOR,
                                     GOAL_EMPTY, PX, TITLE, UI_BG, UI_DIM, UI_EDGE, UI_TEXT, Playback, door_open,
                                     draw, draw_button, goal_mark, notched, start)
 
@@ -25,6 +29,26 @@ TOOL_FACE, TOOL_PICKED, TOOL_LOCKED = (62, 60, 90), (255, 205, 70), (50, 48, 70)
 HOVER, BELT_MARK, BAD = (255, 255, 255), (255, 205, 70), (230, 70, 70)
 GHOST_ALPHA = 150
 DIALOG_W, OPT_W, OPT_H, OPT_GAP = 400, 64, 40, 8
+LEVEL_DIR = ASSETS.parent / "levels"  # saved custom levels
+NAME_CHARS, NAME_MAX, LOAD_PAGE = "abcdefghijklmnopqrstuvwxyz0123456789 -_", 18, 6
+FIELD, WARN = (20, 18, 35), (240, 110, 90)
+
+
+def slug(name):
+    """File name for a level name: lowercase letters and digits joined by underscores."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "level"
+
+
+def saved_levels():
+    """[(name, path)] of the saved levels, by name. A file that can't be read is listed under its file name."""
+    out = []
+    for path in sorted(LEVEL_DIR.glob("*.json")):
+        try:
+            name = json.loads(path.read_text()).get("name") or path.stem
+        except (OSError, ValueError, AttributeError):
+            name = path.stem
+        out.append((str(name), path))
+    return sorted(out)
 
 
 def inner(c):
@@ -82,8 +106,10 @@ class Creator:
         self.fragile = {}                        # cell -> max weight it holds
         self.crates = {}                         # cell -> (weight, goal cell it must finish on, or None = any)
         self.robot = None
+        self.name = "my level"                   # used when saving
         self.stage = None                        # second half of a two-step part: (tool, first cell)
         self.dialog = None                       # details being edited: {"kind", "cell", "new", "weight", "goal"}
+        self.files = None                        # save / load dialog: {"mode": "save", "name"} or {"mode": "load", "page"}
         self.pb = None                           # Playback while a solve runs or its plan plays
         self.last = None                         # cell the last click / drag acted on
         self.status = "pick a part, then click the map"
@@ -130,7 +156,47 @@ class Creator:
                 "belts": [{"entry": list(e), "exit": list(x)} for e, x in self.belts],
                 "plates": [list(c) for c in sorted(self.plates)], "doors": [list(c) for c in sorted(self.doors)]}
 
+    def from_level(self, lv):
+        """Replace the layout with a level dict (as saved by save_level, or any bridge level)."""
+        self.reset()
+        ids = {g["id"]: tuple(g["pos"]) for g in lv["goals"]}
+        self.walls = {tuple(c) for c in lv["walls"] if inner(tuple(c))}
+        self.goals = [tuple(g["pos"]) for g in lv["goals"]]
+        self.crates = {tuple(b["pos"]): (int(b["weight"]), ids.get(b.get("goal"))) for b in lv["boxes"][:MAX_CRATES]}
+        self.robot = tuple(lv["robot"]) if lv.get("robot") else None
+        self.fragile = {tuple(f["pos"]): int(f["max_weight"]) for f in lv.get("fragile", [])}
+        self.belts = [(tuple(b["entry"]), tuple(b["exit"])) for b in lv.get("belts", [])]
+        self.plates = {tuple(c) for c in lv.get("plates", [])}
+        self.doors = {tuple(c) for c in lv.get("doors", [])}
+        if self.robot and self.tool == "robot":
+            self.tool = None
+
+    def save_level(self, name):
+        name = name.strip()
+        if not name:
+            self.status = "type a name first"
+            return
+        LEVEL_DIR.mkdir(exist_ok=True)
+        path = LEVEL_DIR / f"{slug(name)}.json"
+        replaced = path.exists()
+        path.write_text(json.dumps({"name": name, **self.level()}, indent=1))
+        self.name, self.files = name, None
+        self.status = f"saved as levels/{path.name}" + (" (replaced)" if replaced else "")
+
+    def load_level(self, name, path):
+        try:
+            self.from_level(json.loads(path.read_text()))
+        except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
+            self.status = f"couldn't read levels/{path.name}"
+        else:
+            self.name, self.status = name, f"loaded {name}"
+        self.files = None
+
     # ---- editing ----
+
+    def busy(self):
+        """A solve is running: SOLVE, RESET, SAVE, LOAD and all editing wait for it."""
+        return bool(self.pb and self.pb.pending)
 
     def holding(self):
         return self.stage[0] if self.stage else self.tool
@@ -142,6 +208,8 @@ class Creator:
         return not (tool == "robot" and self.robot is not None)
 
     def pick(self, tool):
+        if self.busy():
+            return
         if self.stage:
             self.status = f"place the {NEXT_STAGE[self.tool][1]} first (esc cancels)"
             return
@@ -238,6 +306,8 @@ class Creator:
 
     def press(self, c, button, drag=False):
         """Mouse on the map: left places the part in hand, right erases. Drags only paint walls / erase."""
+        if self.busy():
+            return
         if self.pb:  # leave the solution playback and go back to editing
             self.pb = None
             self.status = "editing"
@@ -255,7 +325,7 @@ class Creator:
 
     def ready(self):
         """Whether SOLVE may go ahead (then the algorithm is asked for); says why not in the status line."""
-        if self.pb and self.pb.pending:
+        if self.busy():
             return False
         self.cancel()
         if self.robot is None:
@@ -348,6 +418,98 @@ class Creator:
             return True
         return ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION)
 
+    # ---- modal dialogs: part details, or save / load ----
+
+    def modal(self):
+        return self.dialog is not None or self.files is not None
+
+    def modal_event(self, ev):
+        """While a dialog is open it takes all mouse and key input. Returns True if ev was consumed."""
+        return self.files_event(ev) if self.files else self.dialog_event(ev)
+
+    def draw_modal(self, screen, mouse):
+        self.draw_files(screen, mouse) if self.files else self.draw_dialog(screen, mouse)
+
+    def open_files(self, mode):
+        if not self.busy():
+            self.cancel()
+            self.pb = None
+            self.files = {"mode": "save", "name": self.name} if mode == "save" else {"mode": "load", "page": 0}
+
+    def files_layout(self):
+        """Panel, text [(words, scale, color, (x, y))], buttons [(rect, label, palette, action)], and the name
+        field rect (save only)."""
+        f, w = self.files, DIALOG_W
+        x0, field = (BOARD - w) // 2 + 24, None
+        bw = (w - 48 - 12) // 2
+        if f["mode"] == "save":
+            h = 18 + 36 + 24 + 44 + 20 + 44 + 20
+            panel = pygame.Rect((BOARD - w) // 2, (BOARD - h) // 2, w, h)
+            text = [("save level", 3, TITLE, (x0, panel.y + 18)), ("name", 2, UI_DIM, (x0, panel.y + 54))]
+            field = pygame.Rect(x0, panel.y + 78, w - 48, 44)
+            y = field.bottom + 20
+            items = [(pygame.Rect(x0, y, bw, 44), "save", BTN_SOLVE, lambda: self.save_level(f["name"])),
+                     (pygame.Rect(x0 + bw + 12, y, bw, 44), "cancel", BTN_RESET, self.close_files)]
+            return panel, text, items, field
+        levels = saved_levels()
+        pages = max(1, -(-len(levels) // LOAD_PAGE))
+        f["page"] = min(f["page"], pages - 1)
+        shown = levels[f["page"] * LOAD_PAGE:(f["page"] + 1) * LOAD_PAGE]
+        h = 18 + 40 + max(1, len(shown)) * 48 + (48 if pages > 1 else 0) + 8 + 44 + 20
+        panel = pygame.Rect((BOARD - w) // 2, (BOARD - h) // 2, w, h)
+        text = [("load level", 3, TITLE, (x0, panel.y + 18))]
+        y = panel.y + 58
+        if not shown:
+            text.append(("no saved levels yet", 2, UI_DIM, (x0, y + 14)))
+        items = [(pygame.Rect(x0, y + i * 48, w - 48, 40), name, BTN_NAV, lambda n=name, p=path: self.load_level(n, p))
+                 for i, (name, path) in enumerate(shown)]
+        y += max(1, len(shown)) * 48
+        if pages > 1:
+            turn = lambda d: lambda: f.__setitem__("page", (f["page"] + d) % pages)
+            items += [(pygame.Rect(x0, y, bw, 40), "< page", BTN_OFF, turn(-1)),
+                      (pygame.Rect(x0 + bw + 12, y, bw, 40), "page >", BTN_OFF, turn(1))]
+            text.append((f"{f['page'] + 1}/{pages}", 2, UI_DIM, (panel.right - 70, panel.y + 24)))
+            y += 48
+        items.append((pygame.Rect(x0, y + 8, w - 48, 44), "cancel", BTN_RESET, self.close_files))
+        return panel, text, items, field
+
+    def close_files(self):
+        self.files, self.status = None, "editing"
+
+    def files_event(self, ev):
+        f = self.files
+        if ev.type == pygame.KEYDOWN:
+            if ev.key == pygame.K_ESCAPE:
+                self.close_files()
+            elif f["mode"] == "save" and ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.save_level(f["name"])
+            elif f["mode"] == "save" and ev.key == pygame.K_BACKSPACE:
+                f["name"] = f["name"][:-1]
+            elif f["mode"] == "save" and ev.unicode and ev.unicode.lower() in NAME_CHARS and len(f["name"]) < NAME_MAX:
+                f["name"] += ev.unicode.lower()
+            return True
+        if ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
+            for r, _, _, action in self.files_layout()[2]:
+                if r.collidepoint(ev.pos):
+                    action()
+                    break
+            return True
+        return ev.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION, pygame.TEXTINPUT)
+
+    def draw_files(self, screen, mouse):
+        panel, text, items, field = self.files_layout()
+        shade_and_panel(screen, panel)
+        for words, scale, color, (x, y) in text:
+            screen.blit(pixelfont.render(words, scale, UI_EDGE), (x + scale, y + scale))
+            screen.blit(pixelfont.render(words, scale, color), (x, y))
+        if field:
+            notched(screen, field, UI_EDGE)
+            pygame.draw.rect(screen, FIELD, field.inflate(-2 * PX, -2 * PX))
+            caret = "_" if pygame.time.get_ticks() // 500 % 2 else ""
+            screen.blit(pixelfont.render(self.files["name"] + caret, 2, UI_TEXT), (field.x + 12, field.y + 15))
+        for r, label, colors, _ in items:
+            draw_button(screen, r, label, colors, hover=r.collidepoint(mouse))
+
     def draw_dialog(self, screen, mouse):
         d = self.dialog
         shade = pygame.Surface((WIDTH, BOARD + BAR), pygame.SRCALPHA)
@@ -369,6 +531,15 @@ class Creator:
 
     # ---- drawing ----
 
+    def counter_lines(self):
+        """The live counter under the parts: crates placed, goals placed, and a warning when goals run short."""
+        crates, goals = len(self.crates), len(self.goals)
+        lines = [(f"crates {crates}/{MAX_CRATES}", UI_TEXT), (f"goals  {goals}", UI_TEXT)]
+        if goals < crates:
+            short = crates - goals
+            lines.append((f"need {short} more goal{'s' if short > 1 else ''}", WARN))
+        return lines
+
     def rows(self):
         return [pygame.Rect(BOARD + 12, ROW_TOP + i * (ROW_H + ROW_GAP), SIDE - 24, ROW_H) for i in range(len(TOOLS))]
 
@@ -382,17 +553,19 @@ class Creator:
     def draw(self, screen, font, sprites, art, dt, mouse):
         """Board (layout or solution playback), sidebar of parts and status bar. The caller draws the bottom
         buttons, then draw_dialog() on top of everything when a dialog is open."""
-        title = "level creator"
+        title = f"level creator - {self.name}"
         if self.pb:
             anim = self.pb.update(dt)
             draw(screen, font, sprites, self.pb.lv, self.pb.st, round(self.pb.door_t), anim)
             status = self.pb.status
             title = "level creator - click the map to edit" if not self.pb.pending and not self.pb.plan else title
+            if self.pb.pending:
+                title = "level creator - solving, please wait"
         else:
             lv = self.level()
             st = start(lv)
             draw(screen, font, sprites, lv, st, DOOR_FRAMES - 1 if door_open(lv, st) else 0)
-            if not self.dialog:
+            if not self.modal():
                 self.draw_marks(screen, art, mouse)
             status = self.status
         self.draw_sidebar(screen, art, mouse)
@@ -424,11 +597,11 @@ class Creator:
         screen.blit(pixelfont.render("parts", 3, UI_TEXT), (BOARD + 12, 14))
         for r, (tool, name) in zip(self.rows(), TOOLS):
             picked = tool == self.tool
-            locked = not self.available(tool)
+            locked = not self.available(tool) or (self.busy() and not picked)
             if picked and self.stage:
                 tool, name = NEXT_STAGE[tool]
             face = TOOL_PICKED if picked else TOOL_LOCKED if locked else TOOL_FACE
-            if r.collidepoint(mouse) and not picked and not locked and not self.dialog:
+            if r.collidepoint(mouse) and not picked and not locked and not self.modal():
                 face = tuple(min(255, v + 25) for v in face)
             notched(screen, r, UI_EDGE)
             pygame.draw.rect(screen, face, r.inflate(-2 * PX, -2 * PX))
@@ -440,16 +613,32 @@ class Creator:
             screen.blit(pixelfont.render(name, 2, color), (r.x + 46, r.y + 12))
             if tool == "robot" and locked and not self.stage:
                 screen.blit(pixelfont.render("placed", 1, UI_DIM), (r.right - 44, r.y + 16))
+        y = ROW_TOP + len(TOOLS) * (ROW_H + ROW_GAP) + 6
+        pygame.draw.rect(screen, UI_EDGE, (BOARD + 12, y, SIDE - 24, PX))
+        for i, (words, color) in enumerate(self.counter_lines()):
+            screen.blit(pixelfont.render(words, 2, color), (BOARD + 16, y + 16 + i * 24))
+
+
+def shade_and_panel(screen, panel):
+    """Dim the whole window, then draw an empty pixel panel."""
+    shade = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+    shade.fill((10, 10, 20, 150))
+    screen.blit(shade, (0, 0))
+    notched(screen, panel.move(0, PX), UI_EDGE)
+    notched(screen, panel, UI_EDGE)
+    pygame.draw.rect(screen, UI_BG, panel.inflate(-2 * PX, -2 * PX))
 
 
 def creator_buttons(cr, exit_, ask):
     """(rect, label, palette, action, text scale) for the creator's bottom bar. ask(fn) asks for the algorithm
-    and calls fn(algo)."""
+    and calls fn(algo). While a solve runs, everything but EXIT is greyed out and does nothing."""
     gap, margin, h = 10, 12, 48
-    w = (WIDTH - 2 * margin - 2 * gap) // 3
-    row = [pygame.Rect(margin + i * (w + gap), BOARD + BAR - h - 12, w, h) for i in range(3)]
-    busy = bool(cr.pb and cr.pb.pending)
-    return [(row[0], "solving" if busy else "solve", BTN_OFF if busy else BTN_SOLVE,
-             lambda: cr.ready() and ask(cr.solve), 2),
-            (row[1], "reset", BTN_RESET, cr.reset, 2),
-            (row[2], "exit", BTN_NAV, exit_, 2)]
+    w = (WIDTH - 2 * margin - 4 * gap) // 5
+    row = [pygame.Rect(margin + i * (w + gap), BOARD + BAR - h - 12, w, h) for i in range(5)]
+    busy = cr.busy()
+    idle = lambda palette: BTN_OFF if busy else palette
+    return [(row[0], "solving" if busy else "solve", idle(BTN_SOLVE), lambda: cr.ready() and ask(cr.solve), 2),
+            (row[1], "reset", idle(BTN_RESET), lambda: busy or cr.reset(), 2),
+            (row[2], "save", idle(BTN_NAV), lambda: cr.open_files("save"), 2),
+            (row[3], "load", idle(BTN_NAV), lambda: cr.open_files("load"), 2),
+            (row[4], "exit", BTN_NAV, exit_, 2)]
