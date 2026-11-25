@@ -1,8 +1,8 @@
 """Dev viewer: draws the test levels with basic shapes and plays solver plans. Not the real UI.
 
 Run: uv run warehouse-viewer
-Screens: home (LEVELS / CREATE) -> level selector -> play (EXIT / SOLVE with A* / RESET); the level creator
-is a placeholder for now.
+Screens: home (LEVELS / CREATE) -> level selector -> play (EXIT / SOLVE with A* / RESET), and the level
+creator (see creator.py).
 Keyboard shortcuts while playing: A/G/U = solve with A*/greedy/UCS, R = reset, Esc = exit. Esc on home quits."""
 import math
 from pathlib import Path
@@ -192,7 +192,7 @@ def step_time(lv, st, step):
 
 def start(lv):
     """Mutable play state for a level: robot cell, held box id, box id -> cell."""
-    return {"robot": tuple(lv["robot"]), "held": None, "boxes": {b["id"]: tuple(b["pos"]) for b in lv["boxes"]}}
+    return {"robot": tuple(lv["robot"]) if lv["robot"] else None, "held": None, "boxes": {b["id"]: tuple(b["pos"]) for b in lv["boxes"]}}
 
 
 def apply(st, step):
@@ -274,6 +274,8 @@ def draw(screen, font, sprites, lv, st, door_frame, anim=None):
         cx, cy = rect(c).center
         outlined(screen, font, f"{b} w{weight[b]}", (cx, cy - 6))
         outlined(screen, font, f"->{target[b]}" if target[b] else "any", (cx, cy + 6))
+    if st["robot"] is None:  # a creator layout before the robot is placed
+        return
     # robot: slides straight between cells and sinks under a load
     pos, sink, crate = cell_px(st["robot"]), SINK if st["held"] else 0, st["held"]
     if kind == "walk":
@@ -351,31 +353,21 @@ def centred(w, h, y):
     return pygame.Rect((WIN_W - w) // 2, y, w, h)
 
 
-class Viewer:
-    """Which screen is showing (home / select / create / play) and, while playing: the level, its play state,
-    the solver call in flight and the plan being animated."""
+class Playback:
+    """One level being solved and played: its play state, the solver call in flight and the plan being animated."""
 
-    def __init__(self):
-        self.screen = "home"
-        self.load(0)
+    def __init__(self, name, lv):
+        self.name, self.lv = name, lv
+        self.restart()
 
-    def go(self, screen):
-        self.screen = screen
-
-    def play(self, i):
-        self.load(i)
-        self.screen = "play"
-
-    def load(self, i):
-        self.idx = i % len(LEVELS)
-        self.name, self.lv = LEVELS[self.idx]
+    def restart(self):
         self.st, self.plan, self.pending, self.timer = start(self.lv), [], None, 0.0
         self.status = "press SOLVE"
         self.door_t = None  # animated door frame (float); None snaps to the current state
 
     def solve(self, algo="astar"):
         if self.pending is None:
-            self.load(self.idx)
+            self.restart()
             self.pending = (algo, bridge.submit(bridge.solve, self.lv, algo))
             self.status = f"{ALGO_NAME[algo]}: solving..."
 
@@ -408,6 +400,20 @@ class Viewer:
         return (self.plan[0], self.timer / step_time(self.lv, self.st, self.plan[0])) if self.plan else None
 
 
+class Viewer:
+    """Which screen is showing (home / select / create / play), the level being played and the creator's layout."""
+
+    def __init__(self, creator):
+        self.screen, self.idx, self.creator = "home", 0, creator
+        self.pb = Playback(*LEVELS[0])
+
+    def go(self, screen):
+        self.screen = screen
+
+    def play(self, i):
+        self.idx, self.pb, self.screen = i, Playback(*LEVELS[i]), "play"
+
+
 def buttons(vw):
     """(rect, label, palette, action, text scale) for every button on the current screen."""
     if vw.screen == "home":
@@ -417,18 +423,16 @@ def buttons(vw):
     if vw.screen == "select":
         return [(centred(420, 44, 92 + i * 52), f"{i + 1}. {name}", BTN_NAV, lambda i=i: vw.play(i), 2)
                 for i, (name, _) in enumerate(LEVELS)] + [back]
-    if vw.screen == "create":
-        return [back]
     gap, margin, h = 10, 12, 48  # play: the bar under the board
     w = (BOARD - 2 * margin - 2 * gap) // 3
     row = [pygame.Rect(margin + i * (w + gap), BOARD + BAR - h - 12, w, h) for i in range(3)]
     return [(row[0], "exit", BTN_NAV, lambda: vw.go("select"), 2),
-            (row[1], "solving" if vw.pending else "solve", BTN_OFF if vw.pending else BTN_SOLVE, vw.solve, 2),
-            (row[2], "reset", BTN_RESET, lambda: vw.load(vw.idx), 2)]
+            (row[1], "solving" if vw.pb.pending else "solve", BTN_OFF if vw.pb.pending else BTN_SOLVE, vw.pb.solve, 2),
+            (row[2], "reset", BTN_RESET, vw.pb.restart, 2)]
 
 
 def draw_menu(screen, art, vw):
-    """Home, level selector and creator placeholder: dimmed floor, a title, and (home) the robot lifting a crate."""
+    """Home and level selector: dimmed floor, a title, and (home) the robot lifting a crate."""
     screen.blit(art["backdrop"], (0, 0))
     if vw.screen == "home":
         shadow_text(screen, "warehouse", 7, TITLE, (WIN_W // 2, 64))
@@ -437,22 +441,21 @@ def draw_menu(screen, art, vw):
         bot = art["robot"].get_rect(midbottom=(WIN_W // 2, 380))
         screen.blit(art["robot"], bot)
         screen.blit(art["crate"], art["crate"].get_rect(midbottom=(bot.centerx, bot.top + 20)))
-    elif vw.screen == "select":
-        shadow_text(screen, "select level", 4, TITLE, (WIN_W // 2, 46))
     else:
-        shadow_text(screen, "level creator", 4, TITLE, (WIN_W // 2, 46))
-        shadow_text(screen, "coming soon", 3, UI_DIM, (WIN_W // 2, WIN_H // 2 - 20))
+        shadow_text(screen, "select level", 4, TITLE, (WIN_W // 2, 46))
 
 
 def draw_bar(screen, vw):
     """Bottom bar while playing: level name and solver status in pixel text (buttons are drawn separately)."""
     pygame.draw.rect(screen, UI_BG, (0, BOARD, BOARD, BAR))
     pygame.draw.rect(screen, UI_EDGE, (0, BOARD, BOARD, PX))
-    screen.blit(pixelfont.render(f"level {vw.idx + 1}/{len(LEVELS)}: {vw.name}", 2, UI_TEXT), (12, BOARD + 12))
-    screen.blit(pixelfont.render(vw.status, 2, UI_DIM), (12, BOARD + 32))
+    screen.blit(pixelfont.render(f"level {vw.idx + 1}/{len(LEVELS)}: {vw.pb.name}", 2, UI_TEXT), (12, BOARD + 12))
+    screen.blit(pixelfont.render(vw.pb.status, 2, UI_DIM), (12, BOARD + 32))
 
 
 def main():
+    from warehouse_robot import creator  # imported here: creator builds on this module's drawing helpers
+
     pygame.init()
     screen = pygame.display.set_mode((WIN_W, WIN_H))
     pygame.display.set_caption("Warehouse robot")
@@ -463,44 +466,71 @@ def main():
                "shelf": sheet("shelf_4variants_32.png", 4, CELL)}
     art = {"backdrop": backdrop(), "robot": sprite("AI-sprite.png", 96),
            "crate": sprite("crate_crosstape_32.png", 84, square=True)}
-    clock, vw = pygame.time.Clock(), Viewer()
+    parts = creator.make_art(sprites)
+    clock, vw = pygame.time.Clock(), Viewer(creator.Creator())
+    cr = vw.creator
     held = None  # (screen, index) of the button the mouse went down on; it fires if released over it
-    keys = {pygame.K_r: lambda: vw.load(vw.idx), pygame.K_a: lambda: vw.solve("astar"),
-            pygame.K_g: lambda: vw.solve("greedy"), pygame.K_u: lambda: vw.solve("ucs")}
+    keys = {pygame.K_r: lambda: vw.pb.restart(), pygame.K_a: lambda: vw.pb.solve("astar"),
+            pygame.K_g: lambda: vw.pb.solve("greedy"), pygame.K_u: lambda: vw.pb.solve("ucs")}
+
+    def current_buttons():
+        if vw.screen == "create":
+            return creator.creator_buttons(cr, lambda: vw.go("home"))
+        return buttons(vw)
+
+    def on_board(pos):
+        return pos[0] < BOARD and pos[1] < BOARD
 
     running = True
     while running:
         dt = clock.tick(60) / 1000
-        btns = buttons(vw)
+        size = (creator.WIDTH if vw.screen == "create" else WIN_W, WIN_H)  # the creator is wider: its sidebar
+        if screen.get_size() != size:
+            screen = pygame.display.set_mode(size)
+        btns = current_buttons()
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 running = False
+            elif vw.screen == "create" and cr.dialog and cr.dialog_event(ev):
+                pass  # the creator's details dialog takes all input while open
             elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:  # one screen back; quit from home
                 if vw.screen == "home":
                     running = False
-                else:
+                elif not (vw.screen == "create" and cr.cancel()):
                     vw.go({"play": "select"}.get(vw.screen, "home"))
             elif ev.type == pygame.KEYDOWN and ev.key in keys and vw.screen == "play":
                 keys[ev.key]()
-            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+            elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button in (1, 3):
                 hit = next((i for i, b in enumerate(btns) if b[0].collidepoint(ev.pos)), None)
-                held = None if hit is None else (vw.screen, hit)
+                if hit is not None and ev.button == 1:
+                    held = (vw.screen, hit)
+                elif vw.screen == "create" and on_board(ev.pos):
+                    cr.press((ev.pos[0] // CELL, ev.pos[1] // CELL), ev.button)
+                elif vw.screen == "create" and ev.button == 1:
+                    cr.click_sidebar(ev.pos)
+            elif ev.type == pygame.MOUSEMOTION and vw.screen == "create" and on_board(ev.pos) and held is None:
+                if ev.buttons[0] or ev.buttons[2]:  # drag to paint walls or erase
+                    cr.press((ev.pos[0] // CELL, ev.pos[1] // CELL), 1 if ev.buttons[0] else 3, drag=True)
             elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
                 if held and held[0] == vw.screen and btns[held[1]][0].collidepoint(ev.pos):
                     btns[held[1]][3]()
                 held = None
-            btns = buttons(vw)  # an action may have switched screens
+            btns = current_buttons()  # an action may have switched screens
 
+        mouse = pygame.mouse.get_pos()
         if vw.screen == "play":
-            anim = vw.update(dt)
-            draw(screen, font, sprites, vw.lv, vw.st, round(vw.door_t), anim)
+            anim = vw.pb.update(dt)
+            draw(screen, font, sprites, vw.pb.lv, vw.pb.st, round(vw.pb.door_t), anim)
             draw_bar(screen, vw)
+        elif vw.screen == "create":
+            cr.draw(screen, font, sprites, parts, dt, mouse)
         else:
             draw_menu(screen, art, vw)
-        mouse = pygame.mouse.get_pos()
         for i, (r, text, colors, _, scale) in enumerate(btns):
             over = r.collidepoint(mouse)
             draw_button(screen, r, text, colors, hover=over, down=over and held == (vw.screen, i), scale=scale)
+        if vw.screen == "create" and cr.dialog:
+            cr.draw_dialog(screen, mouse)
         pygame.display.flip()
 
     bridge.shutdown()
