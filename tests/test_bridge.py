@@ -52,6 +52,8 @@ def broken(path, value):
     (("doors",), KeyError),
     (("boxes", 0, "weight"), KeyError),
     (("extra",), []),
+    (("boxes", 0, "free"), 1),        # not a bool
+    (("boxes", 1, "free"), True),     # free box with a goal
 ])
 def test_bad_input_raises(path, value):
     with pytest.raises(ValueError):
@@ -76,3 +78,18 @@ def test_round_trip():
     assert belt == [{"Ex": 2, "Ey": 5, "Xx": 5, "Xy": 5, "L": 4}]
     assert walls == [{"N": 37}]  # 36 border + 1 inner
     assert robot == [{"X": 1, "Y": 1}]
+
+
+def test_free_box_round_trip():
+    lv = copy.deepcopy(SAMPLE)
+    lv["boxes"][0]["free"] = True
+    lv["boxes"][1]["free"] = False
+
+    def run():
+        bridge._load(lv)
+        q = bridge._engine().query
+        return list(q("level:target(a, T)")), list(q("level:target(b, only(G))"))
+
+    a, b = bridge.submit(run).result(10)
+    assert a == [{"T": "none"}]
+    assert b == [{"G": "g1"}]

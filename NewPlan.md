@@ -53,13 +53,14 @@ Revamp after the prof's feedback. The push rule made the original Sokoban too ha
 - **Boxes are obstacles** to the robot. That's what makes narrow aisles require planning: clear the blocker first.
 - **A box can be dropped anywhere legal, not just on goals.** This is required for moving blockers out of the way and for parking a box on a plate.
 
-### Goals: two modes, set per box
+### Goals: three modes, set per box
 - `goal: null` means the box may finish on **any** goal.
 - `goal: "g1"` means the box must finish on **that** goal.
-- A level may mix both.
+- `free: true` (with `goal: null`) means the box needs **no** goal and may finish anywhere. Use it for a **key** that stays on a plate to hold a door open, or for a blocker that only has to be moved out of the way.
+- A level may mix all three, but at least one box must need a goal.
 
 ### Win condition
-Every box is on a goal it accepts, and the robot holds nothing.
+Every box that needs a goal is on a goal it accepts, and the robot holds nothing. Free boxes may be anywhere.
 
 ### Deadlocks are back, on purpose
 Conveyors and plates/doors make some moves irreversible. Example: the last box lifted off a plate can never pass the door, so its goal must be reachable without the door. The validator catches these cases. Nobody needs to reason about them by hand.
@@ -154,10 +155,12 @@ Neither dominates (both are tests in `tests/test_heuristic.pl`):
    - Moving a box one cell costs ≥ 1 + w, and different boxes' moves are different actions, since the robot holds one box at a time.
    - The robot's walk to its first pick happens before any box moves, so it's disjoint from those moves.
    - Boxes end on distinct goals, and the plan's assignment is one of the assignments h_match minimizes over.
+   - Free boxes are left out of the sum: their remaining cost is ≥ 0. The first walk may still go to a free box, since walking to any box is a valid first move.
 4. **h_tour is admissible.**
    - Bound each part of the cost split separately.
    - Weight ≥ Σ w × shift (proof 2), and operations ≥ one PICK + one DROP per unplaced floor box (1 for a held one).
    - Robot moves: order the boxes by first pick. The robot stands next to each in turn, and after the last first pick it walks from next to P (or R) to next to g. The triangle inequality on `dist(0)` then gives the bound.
+   - Only boxes that need a goal are counted (free boxes add terms ≥ 0).
 5. **The max of admissible heuristics is admissible.**
 6. **Neither heuristic dominates:** the two states above.
 7. **A\* with a best-g table (reopening) is optimal with an admissible heuristic.** Pruning dead states is safe: their true cost is infinite.
@@ -171,8 +174,8 @@ Checked by tests: at every state on a UCS-optimal plan of 9 small levels (fragil
 `validate(Level)` runs cheap checks first, then the full search.
 
 **Cheap checks**, in this order (`problem/1` in `solve.pl`; the first failure is the reason returned):
-- 1–4 boxes. Box ids are unique, and so are goal ids. (The bridge already checked ids, coordinates and weights.)
-- Every goal a box names exists, no two boxes need the same goal, and there are at least as many goals as boxes.
+- 1–4 boxes, at least one of them needing a goal. Box ids are unique, and so are goal ids. (The bridge already checked ids, coordinates and weights.)
+- Every goal a box names exists, no two boxes need the same goal, and there are at least as many goals as boxes that need one.
 - Each cell holds at most one of wall, belt, door, plate, goal. The border is always wall. No two goals share a cell, and no two belts cross.
 - A belt doesn't end on a wall, belt or door, and fragile tiles aren't on walls, belts or doors.
 - Starting positions are legal:
@@ -180,7 +183,7 @@ Checked by tests: at every state on a UCS-optimal plan of 9 small levels (fragil
   - no box on a wall, belt or door, or on a fragile tile too weak for it;
   - the robot not on a wall, belt, door or box.
 - Doors need plates, and plates need doors.
-- Every box can reach some goal it accepts (finite `dist`), and some assignment gives all boxes different reachable goals (h of the start is defined).
+- Every box that needs a goal can reach some goal it accepts (finite `dist`), and some assignment gives all boxes different reachable goals (h of the start is defined).
 
 **Full check:** run A*. A plan found means valid. `no_solution` means "Level has no solution" (e.g. a doorstop or conveyor trap).
 The space is finite and there are no limits, so this always finishes.
@@ -195,6 +198,7 @@ The space is finite and there are no limits, so this always finishes.
   "walls":     [[x, y], ...],
   "goals":     [{"id": "g1", "pos": [x, y]}, ...],
   "boxes":     [{"id": "a", "pos": [x, y], "weight": 2, "goal": "g1"},   # or "goal": None
+                {"id": "k", "pos": [x, y], "weight": 1, "goal": None, "free": True},   # optional, default False
                 ...],
   "robot":     [x, y],
   "fragile":   [{"pos": [x, y], "max_weight": 1}, ...],
@@ -204,6 +208,7 @@ The space is finite and there are no limits, so this always finishes.
 }
 ```
 - The border cells (x or y = 0 or 9) are always walls, whether or not they're listed.
+- `"free"` is optional and must be `True`/`False`. A free box must have `"goal": None`. (Not `"goal": "none"`: `none` is a valid goal id.)
 - Belts: the exit is an ordinary cell where the ride ends. The robot may step onto the entry from any neighboring cell, and the ride's length is |exit − entry| + 1.
 - Both calls run searches, so the UI calls them through `submit()`.
 
