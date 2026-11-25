@@ -24,7 +24,9 @@ def room(mx, my):
 def level(walls=(), goals=(), boxes=(), robot=(1, 1), fragile=(), belts=(), plates=(), doors=()):
     return {"walls": [list(w) for w in walls],
             "goals": [{"id": g, "pos": list(p)} for g, p in goals],
-            "boxes": [{"id": b, "pos": list(p), "weight": w, "goal": t} for b, p, w, t in boxes],
+            # goal "FREE" marks a free box (needs no goal); upper case, so never a real goal id
+            "boxes": [{"id": b, "pos": list(p), "weight": w, "goal": None if t == "FREE" else t, "free": t == "FREE"}
+                      for b, p, w, t in boxes],
             "robot": list(robot),
             "fragile": [{"pos": list(p), "max_weight": m} for p, m in fragile],
             "belts": [{"entry": list(e), "exit": list(x)} for e, x in belts],
@@ -33,6 +35,7 @@ def level(walls=(), goals=(), boxes=(), robot=(1, 1), fragile=(), belts=(), plat
 
 SHELVES = [[x, y] for y in (3, 6) for x in (2, 3, 4, 6, 7)]
 DOOR_ROOM = room(7, 4) + [[4, y] for y in (1, 3, 4)]
+KEY_ROOM = room(8, 5) + [[5, y] for y in (1, 2, 4, 5)]  # door gap at 5-3
 LEVELS = [
     ("one box", level(goals=[("g1", (6, 1))], boxes=[("a", (3, 1), 1, None)])),
     ("heavy box", level(goals=[("g1", (6, 1))], boxes=[("a", (3, 1), 3, None)])),
@@ -44,6 +47,13 @@ LEVELS = [
     ("doorstop", level(DOOR_ROOM, [("g1", (7, 4)), ("g2", (1, 1))],
                        [("a", (2, 3), 1, "g1"), ("b", (1, 3), 1, "g2")], robot=(3, 4),
                        plates=[(2, 1)], doors=[(4, 2)])),
+    ("key crate", level(DOOR_ROOM, [("g1", (7, 4))], [("a", (2, 3), 1, "g1"), ("k", (1, 3), 1, "FREE")],
+                        robot=(3, 4), plates=[(2, 1)], doors=[(4, 2)])),
+    ("heavy key", level(KEY_ROOM, [("g1", (8, 1))], [("a", (2, 3), 1, None), ("k", (3, 5), 3, "FREE")],
+                        robot=(4, 1), plates=[(1, 1)], doors=[(5, 3)])),
+    ("key, 3 boxes", level(KEY_ROOM, [("g1", (8, 1)), ("g2", (8, 5))],
+                           [("a", (2, 3), 1, None), ("b", (3, 1), 2, None), ("k", (1, 1), 2, "FREE")],
+                           robot=(1, 5), plates=[(4, 5)], doors=[(5, 3)])),
     ("two pinned", level(room(5, 5), [("g1", (1, 5)), ("g2", (5, 5))],
                          [("a", (5, 2), 1, "g1"), ("b", (1, 2), 2, "g2")], robot=(3, 1))),
     ("shelves, 3 boxes", level(SHELVES, [("g1", (8, 1)), ("g2", (8, 4)), ("g3", (8, 7))],
@@ -119,11 +129,11 @@ def draw(screen, font, big, name, lv, st, status):
         pygame.draw.rect(screen, GOAL, rect(g["pos"], 5), 3)
         label(g["id"], g["pos"], GOAL, dy=-18)
     weight = {b["id"]: b["weight"] for b in lv["boxes"]}
-    target = {b["id"]: b["goal"] for b in lv["boxes"]}
+    target = {b["id"]: "free" if b.get("free") else b["goal"] for b in lv["boxes"]}
     for b, c in st["boxes"].items():
         pygame.draw.rect(screen, BOX, rect(c, 10))
         label(f"{b} w{weight[b]}", c)
-        label(f"->{target[b]}" if target[b] else "any", c, dy=12)
+        label(target[b] if target[b] == "free" else f"->{target[b]}" if target[b] else "any", c, dy=12)
     pygame.draw.circle(screen, ROBOT, rect(st["robot"]).center, CELL // 3)
     label("R", st["robot"], FLOOR, f=big)
     if st["held"]:

@@ -113,8 +113,12 @@ def _belt(b):
 
 
 def _box(b):
-    b = _fields(b, ("id", "pos", "weight", "goal"))
-    goal = "any" if b["goal"] is None else f"only({_id(b['goal'])})"
+    keys = ("id", "pos", "weight", "goal")
+    b = _fields(b, keys + ("free",) if isinstance(b, dict) and "free" in b else keys)  # "free" is optional
+    free = b.get("free", False)
+    if type(free) is not bool or (free and b["goal"] is not None):
+        raise ValueError(f"free must be true/false, and a free box has goal None: {b!r}")
+    goal = "none" if free else "any" if b["goal"] is None else f"only({_id(b['goal'])})"
     return f"box({_id(b['id'])},{_cell(b['pos'])},{_int(b['weight'], 1, 3)},{goal})"
 
 

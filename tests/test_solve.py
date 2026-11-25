@@ -29,6 +29,9 @@ FRAGILE = level(room(5, 3), [("g1", (5, 2))], [("a", (1, 2), 2, None)],
 DOOR_WALLS = room(7, 4) + [[4, y] for y in (1, 3, 4)]
 DOORSTOP = level(DOOR_WALLS, [("g1", (7, 4)), ("g2", (1, 1))],
                  [("a", (2, 3), 1, "g1"), ("b", (1, 3), 1, "g2")], robot=(3, 4), plates=[(2, 1)], doors=[(4, 2)])
+KEY = level(DOOR_WALLS, [("g1", (7, 4))], [("a", (2, 3), 1, "g1"), ("b", (1, 3), 1, None)],
+            robot=(3, 4), plates=[(2, 1)], doors=[(4, 2)])
+KEY["boxes"][1]["free"] = True  # b is the key: it can stay on the plate
 DOORSTOP_ALONE = level(DOOR_WALLS, [("g1", (7, 4))], [("a", (2, 3), 1, "g1")],
                        robot=(3, 4), plates=[(2, 1)], doors=[(4, 2)])
 
@@ -49,6 +52,7 @@ def replay(lv, plan):
     goals = {g["id"]: tuple(g["pos"]) for g in lv["goals"]}
     weight = {b["id"]: b["weight"] for b in lv["boxes"]}
     target = {b["id"]: b["goal"] for b in lv["boxes"]}
+    free = {b["id"] for b in lv["boxes"] if b.get("free")}
     boxes = {b["id"]: tuple(b["pos"]) for b in lv["boxes"]}
     robot, held, cost = tuple(lv["robot"]), None, 0
 
@@ -88,7 +92,7 @@ def replay(lv, plan):
             assert cell not in walls | belt_cells | doors and cell not in boxes.values(), (s, cell)
             boxes[b], held, cost = cell, None, cost + 1 + w
     won = held is None and all(p == goals.get(target[b], p) and p in goals.values()
-                               for b, p in boxes.items())
+                               for b, p in boxes.items() if b not in free)
     return cost, won
 
 
@@ -96,7 +100,7 @@ def call(fn, *args):
     return bridge.submit(fn, *args).result(60)
 
 
-@pytest.mark.parametrize("lv", [BASE, BELT, FRAGILE, DOORSTOP], ids=["base", "belt", "fragile", "doorstop"])
+@pytest.mark.parametrize("lv", [BASE, BELT, FRAGILE, DOORSTOP, KEY], ids=["base", "belt", "fragile", "doorstop", "key"])
 def test_plans_replay_to_a_win(lv):
     costs = {}
     for algo in ("ucs", "astar", "greedy"):
@@ -113,6 +117,8 @@ def test_validate_ok():
 
 @pytest.mark.parametrize("lv, reason", [
     (DOORSTOP_ALONE, "This level has no solution"),
+    ({**KEY, "boxes": [KEY["boxes"][0], {**KEY["boxes"][1], "free": False}]},
+     "2 boxes need a goal but there are only 1 goals"),
     (level(goals=[("g1", (6, 1)), ("g2", (6, 2))], boxes=[("a", (3, 1), 1, None), ("b", (3, 1), 1, None)]),
      "Two boxes start on (3, 1)"),
     (level(goals=[("g1", (6, 1))], boxes=[("a", (3, 1), 1, "g2")]),
